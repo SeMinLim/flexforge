@@ -1,0 +1,29 @@
+Software startec
+software shm_open /bdbm28991 returned 3 with errno 0
+bsim PCIe interface init done!
+Magic: c001d00d
+
+Quad 117
+X1Y16 Channel Up: 1
+X1Y17 Channel Up: 1
+X1Y18 Channel Up: 1
+X1Y19 Channel Up: 1
+Quad 119
+X1Y24 Channel Up: 1
+X1Y25 Channel Up: 1
+X1Y26 Channel Up: 1
+X1Y27 Channel Up: 1
+Quad 117
+X1Y16 Lane Up: 1
+X1Y17 Lane Up: 1
+X1Y18 Lane Up: 1
+X1Y19 Lane Up: 1
+Quad 119
+X1Y24 Lane Up: 1
+X1Y25 Lane Up: 1
+X1Y26 Lane Up: 1
+X1Y27 Lane Up: 1
+
+Designate input port as 0
+Send Done! (deadbeef & cafef00d)
+
