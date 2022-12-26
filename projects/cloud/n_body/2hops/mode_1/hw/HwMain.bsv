@@ -45,14 +45,14 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	SerializerIfc#(512, 4) serializer128bPm <- mkSerializer;
 	SerializerIfc#(512, 4) serializer128bV <- mkSerializer;
 
-	DRAMArbiterRemoteIfc#(2) dramArbiterRemote <- mkDRAMArbiterRemote(dram);
+	DRAMArbiterRemoteIfc#(2) dramArbiter <- mkDRAMArbiterRemote(dram);
 	NbodyIfc nbody <- mkNbody;
 	//--------------------------------------------------------------------------------------
 	// Pcie Read and Write
 	//--------------------------------------------------------------------------------------
-	SyncFIFOIfc#(Tuple2#(IOReadReq, Bit#(32))) pcieRespQ <- mkSyncFIFOFromCC(128, pcieclk);
-	SyncFIFOIfc#(IOReadReq) pcieReadReqQ <- mkSyncFIFOToCC(128, pcieclk, pcierst);
-	SyncFIFOIfc#(IOWrite) pcieWriteQ <- mkSyncFIFOToCC(128, pcieclk, pcierst);	
+	SyncFIFOIfc#(Tuple2#(IOReadReq, Bit#(32))) pcieRespQ <- mkSyncFIFOFromCC(256, pcieclk);
+	SyncFIFOIfc#(IOReadReq) pcieReadReqQ <- mkSyncFIFOToCC(256, pcieclk, pcierst);
+	SyncFIFOIfc#(IOWrite) pcieWriteQ <- mkSyncFIFOToCC(256, pcieclk, pcierst);	
 	rule getReadReq;
 		let r <- pcie.dataReq;
 		pcieReadReqQ.enq(r);
@@ -70,6 +70,7 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	//--------------------------------------------------------------------------------------------
 	// Get Commands from Host via PCIe
 	//--------------------------------------------------------------------------------------------	
+	Reg#(Bool) stage1 <- mkReg(False);
 	Reg#(Bool) fpga1MemReaderOn <- mkReg(False);
 	Reg#(Bool) fpga1DataOrganizerOn <- mkReg(False);
 	Reg#(Bool) fpga1RelayDataOn <- mkReg(False);
@@ -81,10 +82,12 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 		let d = w.data;
 		let a = w.addr;
 		let off = (a >> 2);
-
-		if ( off == 0 ) begin // Initial Set
-			deserializer32b.put(d);			
+	
+		if ( off == 0 ) begin
+			stage1 <= True;
 		end else if ( off == 1 ) begin
+			deserializer32b.put(d);
+		end else if ( off == 2 ) begin 
 			fpga1MemReaderOn <= True;
 			fpga1DataOrganizerOn <= True;
 			fpga1RelayDataOn <= True;
@@ -114,146 +117,69 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	//   OriginPmAdd => 0 ~ 134,217,727                  OriginVAdd => 268,435,456 ~ 369,098,751
 	//   UpdatedPmAdd => 134,217,728 ~ 268,435,455       UpdatedVAdd => 369,098,752 ~ 467,762,047
 	//--------------------------------------------------------------------------------------------
-	// FPGA1 (Memory Part)
-	//--------------------------------------------------------------------------------------------
-	// DRAM Writer
-	//--------------------------------------------------------------------------------------------
-	// Initial Set
+	// Stage 1 (Initial Setting)
+	//
+	// This stage writes the data take from the host through PCIe to DRAM
 	//--------------------------------------------------------------------------------------------
 	FIFOF#(Bit#(32)) cycleQ <- mkFIFOF;
-	FIFOF#(Bit#(32)) validCheckerQ <- mkFIFOF;
+	FIFOF#(Bit#(32)) statusCheckerQ <- mkFIFOF;
 
-	Reg#(Bit#(32)) memWrCntIni <- mkReg(0);
+	Reg#(Bit#(32)) dramWrInitCnt <- mkReg(0);
 
-	Reg#(Bool) fpga1MemWrInit <- mkReg(True);
-	Reg#(Bool) fpga1MemWrRslt <- mkReg(False);
+	Reg#(Bool) dramWrInit <- mkReg(True);
+	Reg#(Bool) dramWrRslt <- mkReg(False);
 
 	Reg#(Bool) toNbodyPm <- mkReg(True);
 	Reg#(Bool) fromNbodyPm <- mkReg(False);
 
 	Reg#(Bool) toNbodyV <- mkReg(True);
 	Reg#(Bool) fromNbodyV <- mkReg(False);
-	rule fpga1MemWriterInit( fpga1MemWrInit );
-		if ( memWrCntIni != 0 ) begin
+	rule dramWriterInit( stage1 );
+		if ( dramWrInitCnt != 0 ) begin
 			let payload <- deserializer32b.get;
-			dramArbiterRemote.access[0].users[0].write(payload);
-			if ( memWrCntIni == fromInteger(wordsTotal64Byte) ) begin
-				memWrCntIni <= 0;
-				fpga1MemWrInit <= False;
+			dramArbiter.access[0].users[0].write(payload);
+			if ( dramWrInitCnt == fromInteger(wordsTotal64Byte) ) begin
+				dramWrInitCnt <= 0;
+				stage1 <= False;
 
-				validCheckerQ.enq(1); // Check dram writer initial set done
+				statusCheckerQ.enq(1); // Check dram writer initial set done
 			end else begin
-				memWrCntIni <= memWrCntIni + 1;
+				dramWrInitCnt <= dramWrInitCnt + 1;
 			end
 		end else begin
-			dramArbiterRemote.access[0].users[0].cmd(0, fromInteger(wordsTotal64Byte), True);
-			memWrCntIni <= memWrCntIni + 1;
+			dramArbiter.access[0].users[0].cmd(0, fromInteger(wordsTotal64Byte), True);
+			dramWrInitCnt <= dramWrInitCnt + 1;
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------
-	// Write the result values
+	// Stage 2 (DRAM Reader)
+	// 
+	// This stage read the data from DRAM
 	//--------------------------------------------------------------------------------------------
-	/*Reg#(Bit#(64)) memWrRsltAddPm <- mkReg(469762048);
-	Reg#(Bit#(64)) memWrRsltAddV <- mkReg(738197504);
-	Reg#(Bit#(8)) memWrRsltCntPm <- mkReg(0);
-	Reg#(Bit#(8)) memWrRsltCntV <- mkReg(0);	
-	Reg#(Bool) memWrPm <- mkReg(True);
-	Reg#(Bool) memWrV <- mkReg(False);
-	rule fpga1MemWriterRslt( fpga1MemWrRslt );
-		if ( memWrPm ) begin
-			if ( memWrRsltCntPm != 0 ) begin
-				let payload <- deserializer128bPm.get;
-				dramArbiterRemote.access[0].users[0].write(payload);
-				if ( memWrRsltCntPm == 64 ) begin
-					if ( (memWrRsltAddPm + (256*4*4)) == 738197504 ) begin
-						memWrRsltAddPm <= 469762048;
-					end else begin
-						memWrRsltAddPm <= memWrRsltAddPm + (256*4*4);
-					end
-					memWrRsltCntPm <= 0;
-					
-					memWrPm <= False;
-					memWrV <= True;
-					
-					toNbodyPm <= True;
-					fromNbodyPm <= False;
-				end else begin
-					memWrRsltCntPm <= memWrRsltCntPm + 1;
-				end
-			end else begin
-				dramArbiterRemote.access[0].users[0].cmd(memWrRsltAddPm, 64, True);
-				memWrRsltCntPm <= memWrRsltCntPm + 1;
-			end
-		end else if ( memWrV ) begin
-			if ( memWrRsltCntV != 0 ) begin
-				let payload <- deserializer128bV.get;
-				dramArbiterRemote.access[0].users[0].write(payload);
-				if ( memWrRsltCntV == 48 ) begin
-					if ( (memWrRsltAddV + (256*3*4)) == 939524096 ) begin
-						memWrRsltAddV <= 738197504;
-						
-						cycleEnd <= cycleCount;
-						Bit#(32) cycleRslt = cycleEnd - cycleStart;
-						cycleQ.enq(cycleRslt);
-					end else begin
-						memWrRsltAddV <= memWrRsltAddV + (256*3*4);				
-					end
-					memWrRsltCntV <= 0;
-					
-					memWrPm <= True;
-					memWrV <= False;
-					
-					toNbodyV <= True;
-					fromNbodyV <= False;
+	Reg#(Bit#(64)) dramRdAddPm <- mkReg(0);
+	Reg#(Bit#(64)) dramRdAddV <- mkReg(268435456);
 
-					fpga1MemWrRslt <= False;
-					fpga1MemReaderOn <= True;
-
-					validCheckerQ.enq(1); // Write 256 updated particel values done
-				end else begin
-					memWrRsltCntV <= memWrRsltCntV + 1;
-				end
-			end else begin
-				dramArbiterRemote.access[0].users[0].cmd(memWrRsltAddV, 48, True);
-				memWrRsltCntV <= memWrRsltCntV + 1;
-			end
-		end
-	endrule*/
-	//--------------------------------------------------------------------------------------------
-	// DRAM Reader
-	//--------------------------------------------------------------------------------------------
-	Reg#(Bit#(64)) memRdAddPm <- mkReg(0);
-	Reg#(Bit#(64)) memRdAddV <- mkReg(268435456);
-
-	Reg#(Bit#(32)) memRdPmCnt_1 <- mkReg(0);
-	Reg#(Bit#(16)) memRdPmCnt_2 <- mkReg(0);
+	Reg#(Bit#(32)) dramRdPmCnt_1 <- mkReg(0);
+	Reg#(Bit#(16)) dramRdPmCnt_2 <- mkReg(0);
 	
-	Reg#(Bit#(8)) memRdVCnt_1 <- mkReg(0);
-	Reg#(Bit#(32)) memRdVCnt_2 <- mkReg(0);
+	Reg#(Bit#(8)) dramRdVCnt_1 <- mkReg(0);
+	Reg#(Bit#(32)) dramRdVCnt_2 <- mkReg(0);
 	
-	Reg#(Bool) memRdPm <- mkReg(True);
-	Reg#(Bool) memRdV <- mkReg(False);
-	rule fpga1MemReader( fpga1MemReaderOn );
-		if ( memRdPm ) begin
-			if ( memRdPmCnt_1 != 0 ) begin
-				let payload <- dramArbiterRemote.access[0].users[0].read;
+	Reg#(Bool) dramRdPm <- mkReg(True);
+	Reg#(Bool) dramRdV <- mkReg(False);
+	rule dramReader( stage2 );
+		if ( dramRdPm ) begin
+			if ( dramRdPmCnt_1 != 0 ) begin
+				let payload <- dramArbiter.access[0].users[0].read;
 				serializer128bPm.put(payload);
-				if ( memRdPmCnt_1 == fromInteger(wordsPm64Byte) ) begin
-					if ( memRdPmCnt_2 == 255 ) begin
-						memRdPmCnt_2 <= 0;
-
-						memRdPm <= False;
-						memRdV <= True;
-					end else begin
-						memRdPmCnt_2 <= memRdPmCnt_2 + 1;
-					end
-					memRdPmCnt_1 <= 0;
+				if ( dramRdPmCnt_1 == 256 ) begin
+					dramRdPm <= False;
+					dramRdV <= True;
 				end else begin
 					memRdPmCnt_1 <= memRdPmCnt_1 + 1;
 				end
-				validCheckerQ.enq(1);
 			end else begin
-				dramArbiterRemote.access[0].users[0].cmd(memRdAddPm, fromInteger(wordsPm64Byte), False);
+				dramArbiter.access[0].users[0].cmd(memRdAddPm, 256, False);
 				memRdPmCnt_1 <= memRdPmCnt_1 + 1;
 			end
 		end else if ( memRdV ) begin
@@ -285,11 +211,14 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 		end
 	endrule
 	//-------------------------------------------------------------------------------------------------
-	// FPGA1 (Data Organizer) Split the 512-bit payload to 32-bit data or Merge the datas to a payload
+	// Stage 3 (Data Serializer & Data Deserializer) 
+	//
+	// This state splits the 512-bit payload to 32-bit data or merges the data to a payload
 	//-------------------------------------------------------------------------------------------------
-	FIFO#(Vector#(4, Bit#(32))) originDataPmQ <- mkSizedBRAMFIFO(256);
+	FIFO#(Vector#(4, Bit#(32))) originDataPmQ_i <- mkSizedBRAMFIFO(1024);
+	FIFO#(Vector#(4, Bit#(32))) originDataPmQ_j <- mkSizedBRAMFIFO(1024);
 	FIFO#(Vector#(4, Bit#(32))) updatedDataPmQ <- mkSizedBRAMFIFO(256);
-	rule fpga1DataOrganizerPm( fpga1DataOrganizerOn );
+	rule fpga1DataOrganizerPm( stage3 );
 		if ( toNbodyPm ) begin
 			Vector#(4, Bit#(32)) pm = replicate(0);
 			let d <- serializer128bPm.get;
@@ -299,7 +228,8 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 			pm[2] = d[95:64]; // Position Z
 			pm[3] = d[127:96]; // Mass
 			
-			originDataPmQ.enq(pm);
+			originDataPmQ_i.enq(pm);
+			originDataPmQ_j.enq(pm);
 
 		end else if ( fromNbodyPm ) begin
 			updatedDataPmQ.deq;
@@ -384,9 +314,9 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------
-	// FPGA1 (A Part of Computing N-body problem)
-	//--------------------------------------------------------------------------------------------
-	// Relay Data to Nbody
+	// Stage 4 (N-body, Data Relayer)
+	//
+	// This stage relays the data to N-body app
 	//--------------------------------------------------------------------------------------------
 	Reg#(Bit#(32)) relayDataPmCnt_1 <- mkReg(0);
 	Reg#(Bit#(16)) relayDataPmCnt_2 <- mkReg(0);
@@ -394,12 +324,13 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	Reg#(Bit#(32)) relayDataVCnt_2 <- mkReg(0);
 	Reg#(Bool) relayDataPm <- mkReg(True);
 	Reg#(Bool) relayDataV <- mkReg(False);
-	rule fpga1RelayData( fpga1RelayDataOn );
+	rule fpga1RelayData( stage4 );
 		if ( relayDataPm ) begin
 			originDataPmQ.deq;
 			let p = originDataPmQ.first;
 	
-			nbody.dataPmIn(p, relayDataPmCnt_1);	
+			nbody.dataPmIn_i(p);	
+			nbody.dataPmIn_j(p);
 
 			if ( relayDataPmCnt_1 == (fromInteger(totalParticles) - 1) ) begin
 				if ( relayDataPmCnt_2 == 255 ) begin
@@ -480,6 +411,76 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 			end
 		end
 	endrule
+	//--------------------------------------------------------------------------------------------
+	// Write the result values
+	//--------------------------------------------------------------------------------------------
+	Reg#(Bit#(64)) memWrRsltAddPm <- mkReg(469762048);
+	Reg#(Bit#(64)) memWrRsltAddV <- mkReg(738197504);
+	Reg#(Bit#(8)) memWrRsltCntPm <- mkReg(0);
+	Reg#(Bit#(8)) memWrRsltCntV <- mkReg(0);	
+	Reg#(Bool) memWrPm <- mkReg(True);
+	Reg#(Bool) memWrV <- mkReg(False);
+	rule fpga1MemWriterRslt( fpga1MemWrRslt );
+		if ( memWrPm ) begin
+			if ( memWrRsltCntPm != 0 ) begin
+				let payload <- deserializer128bPm.get;
+				dramArbiterRemote.access[0].users[0].write(payload);
+				if ( memWrRsltCntPm == 64 ) begin
+					if ( (memWrRsltAddPm + (256*4*4)) == 738197504 ) begin
+						memWrRsltAddPm <= 469762048;
+					end else begin
+						memWrRsltAddPm <= memWrRsltAddPm + (256*4*4);
+					end
+					memWrRsltCntPm <= 0;
+					
+					memWrPm <= False;
+					memWrV <= True;
+					
+					toNbodyPm <= True;
+					fromNbodyPm <= False;
+				end else begin
+					memWrRsltCntPm <= memWrRsltCntPm + 1;
+				end
+			end else begin
+				dramArbiterRemote.access[0].users[0].cmd(memWrRsltAddPm, 64, True);
+				memWrRsltCntPm <= memWrRsltCntPm + 1;
+			end
+		end else if ( memWrV ) begin
+			if ( memWrRsltCntV != 0 ) begin
+				let payload <- deserializer128bV.get;
+				dramArbiterRemote.access[0].users[0].write(payload);
+				if ( memWrRsltCntV == 48 ) begin
+					if ( (memWrRsltAddV + (256*3*4)) == 939524096 ) begin
+						memWrRsltAddV <= 738197504;
+						
+						cycleEnd <= cycleCount;
+						Bit#(32) cycleRslt = cycleEnd - cycleStart;
+						cycleQ.enq(cycleRslt);
+					end else begin
+						memWrRsltAddV <= memWrRsltAddV + (256*3*4);				
+					end
+					memWrRsltCntV <= 0;
+					
+					memWrPm <= True;
+					memWrV <= False;
+					
+					toNbodyV <= True;
+					fromNbodyV <= False;
+
+					fpga1MemWrRslt <= False;
+					fpga1MemReaderOn <= True;
+
+					validCheckerQ.enq(1); // Write 256 updated particel values done
+				end else begin
+					memWrRsltCntV <= memWrRsltCntV + 1;
+				end
+			end else begin
+				dramArbiterRemote.access[0].users[0].cmd(memWrRsltAddV, 48, True);
+				memWrRsltCntV <= memWrRsltCntV + 1;
+			end
+		end
+	endrule
+
 	//-------------------------------------------------------------------------------------------------
 	// FPGA1 (A Part of Checking Status)
 	//-------------------------------------------------------------------------------------------------
@@ -502,5 +503,5 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 				pcieRespQ.enq(tuple2(r, 32'hffffffff));
 			end
 		end
-	endrule
+	endrule*/
 endmodule
