@@ -8,38 +8,37 @@ import BRAMFIFO::*;
 import FloatingPoint::*;
 import Float32::*;
 
-typedef 5 PeWaysLog;
+typedef 4 PeWaysLog;
 typedef TExp#(PeWaysLog) PeWays;
 
 Integer totalParticles = 16*1024*1024;
 
 
 interface CalAccelPeIfc;
-	method Action putOperandI(Vector#(4, Bit#(32)) i);
+	method Action putOperandI(Vector#(3, Bit#(32)) i);
 	method Action putOperandJ(Vector#(4, Bit#(32)) j);
-	method ActionValue#(Vector#(4, Bit#(32))) resultGet;
+	method ActionValue#(Vector#(3, Bit#(32))) resultGet;
 	method Bool resultExist;
 endinterface
 module mkCalAccelPe#(Bit#(PeWaysLog) peIdx) (CalAccelPeIfc);
-	FIFO#(Vector#(4, Bit#(32))) inputIQ <- mkFIFO;
+	FIFO#(Vector#(3, Bit#(32))) inputIQ <- mkFIFO;
 	FIFO#(Vector#(4, Bit#(32))) inputJQ <- mkFIFO;
 
 	Vector#(3, FpPairIfc#(32)) fpSub32 <- replicateM(mkFpSub32);
+	Vector#(3, FpPairIfc#(32)) fpAdd32 <- replicateM(mkFpAdd32);
 	Vector#(9, FpPairIfc#(32)) fpMult32 <- replicateM(mkFpMult32);
 	FpPairIfc#(32) fpDiv32 <- mkFpDiv32;
 	FpFilterIfc#(32) fpSqrt32 <- mkFpSqrt32;
 
-	FIFO#(Bit#(32)) massIQ <- mkFIFO;
 	FIFO#(Bit#(32)) massJQ <- mkFIFO;
 	rule commonSub1;
 		inputIQ.deq;
 		inputJQ.deq;
-		Vector#(4, Bit#(32)) i = inputIQ.first;
+		Vector#(3, Bit#(32)) i = inputIQ.first;
 		Vector#(4, Bit#(32)) j = inputJQ.first;
 		
 		for ( Integer x = 0; x < 3; x = x + 1 ) fpSub32[x].enq(j[x], i[x]);
 		
-		massIQ.enq(i[3]);
 		massJQ.enq(j[3]);
 	endrule
 	FIFO#(Vector#(3, Bit#(32))) tmpResult1Q <- mkFIFO;
@@ -132,27 +131,63 @@ module mkCalAccelPe#(Bit#(PeWaysLog) peIdx) (CalAccelPeIfc);
 
 		for ( Integer x = 0; x < 3; x = x + 1 ) fpMult32[x+6].enq(d, s[x]);
 	endrule
-	FIFOF#(Vector#(4, Bit#(32))) outputAQ <- mkFIFOF;
+	FIFO#(Vector#(3, Bit#(32))) frQ <- mkFIFO;
 	rule calAccelResult2;
-		Vector#(4, Bit#(32)) fr = replicate(0);
+		Vector#(3, Bit#(32)) fr = replicate(0);
 		for ( Integer x = 0; x < 3; x = x + 1 ) begin
 			fpMult32[x+6].deq;
 			fr[x] = fpMult32[x+6].first;
 		end
 
-		massIQ.deq;
-		fr[3] = massIQ.first;
-
-		outputAQ.enq(fr);
+		frQ.enq(fr);
 	endrule
 
-	method Action putOperandI(Vector#(4, Bit#(32)) i);
+	FIFOF#(Vector#(3, Bit#(32))) frBufferQ <- mkFIFOF;
+	Reg#(Bit#(8)) accCnt_1 <- mkReg(0);
+	rule calAccumulator1;
+		frQ.deq;
+		let currFr = frQ.first;
+		if ( accCnt_1 != 0 ) begin
+			if ( frBufferQ.notEmpty ) begin
+				if ( accCnt_1 == 63 ) begin
+					accCnt_1 <= 0;
+				end else begin
+					accCnt_1 <= accCnt_1 + 1;
+				end
+				
+				frBufferQ.deq;
+				let prevFr = frBufferQ.first;
+				for ( Integer x = 0; x < 3; x = x + 1 ) fpAdd32[x].enq(prevFr[x], currFr[x]);
+		end else begin
+			accCnt_1 <= accCnt_1 + 1;
+			frBufferQ.enq(currFr);
+		end
+	endrule
+	FIFOF#(Vector#(3, Bit#(32))) outputAQ <- mkFIFOF;
+	Reg#(Bit#(8)) accCnt_2 <- mkReg(0);
+	rule calAccumulator2;
+		Vector#(3, Bit#(32)) acc = replicate(0);
+		for ( Integer x = 0; x < 3; x = x + 1 ) begin
+			fpAdd32[x].deq;
+			acc[x] = fpAdd32[x].first;
+		end
+
+		if ( accCnt_2 == 62 ) begin
+			outputAQ.enq(acc);
+			accCnt_2 <= 0;
+		end else begin
+			frBufferQ.enq(acc);
+			accCnt_2 <= accCnt_2 + 1;
+		end
+	endrule
+
+	method Action putOperandI(Vector#(3, Bit#(32)) i);
 		inputIQ.enq(i);
 	endmethod
 	method Action putOperandJ(Vector#(4, Bit#(32)) j);
 		inputJQ.enq(j);
 	endmethod
-	method ActionValue#(Vector#(4, Bit#(32))) resultGet;
+	method ActionValue#(Vector#(3, Bit#(32))) resultGet;
 		outputAQ.deq;
 		return outputAQ.first;
 	endmethod
@@ -163,15 +198,17 @@ endmodule
 
 
 interface CalAccelIfc;
-	method Action iIn(Vector#(4, Bit#(32)) dataI);
+	method Action iIn(Vector#(3, Bit#(32)) dataI);
 	method Action jIn(Vector#(4, Bit#(32)) dataJ);
-	method ActionValue#(Vector#(4, Bit#(32))) aOut;
+	method ActionValue#(Vector#(3, Bit#(32))) aOut;
 endinterface
 module mkCalAccel(CalAccelIfc);
+	Vector#(3, FpPairIfc#(32)) fpAdd32 <- replicateM(mkFpAdd32);
+
 	Vector#(PeWays, CalAccelPeIfc) pes;
-	Vector#(PeWays, FIFO#(Vector#(4, Bit#(32)))) iInQs <- replicateM(mkFIFO);
+	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) iInQs <- replicateM(mkFIFO);
 	Vector#(PeWays, FIFO#(Vector#(4, Bit#(32)))) jInQs <- replicateM(mkFIFO);
-	Vector#(PeWays, FIFO#(Vector#(4, Bit#(32)))) aOutQs <- replicateM(mkFIFO);
+	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) aOutQs <- replicateM(mkFIFO);
 
 	for ( Integer x = 0; x < valueOf(PeWays); x = x + 1 ) begin
 		pes[x] <- mkCalAccelPe(fromInteger(x));
@@ -207,28 +244,45 @@ module mkCalAccel(CalAccelIfc);
 		endrule
 	end
 
-	Reg#(Vector#(4, Bit#(32))) accBuffer <- mkReg(replicate(0));
-	FIFO#(Vector#(4, Bit#(32))) aOutQ <- mkSizedBRAMFIFO(256);
-	Reg#(Bit#(8)) accCnt <- mkReg(0);
-	rule accResultA;
-		Vector#(4, Bit#(32)) p = replicate(0);
-		if ( accCnt == fromInteger(valueOf(PeWays)) ) begin
-			Vector#(4, Bit#(32)) a = accBuffer;
-			aOutQ.enq(a);
-			accCnt <= 0;
+	FIFOF#(Vector#(3, Bit#(32))) accBufferQ <- mkFIFOF;
+	Reg#(Bit#(8)) accCnt_1 <- mkReg(0);
+	rule accumulator1;
+		aOutQs[0].deq;
+		let currD = aOutQs[0].first;
+
+		if ( accCnt_1 != 0 ) begin
+			if ( accBufferQ.notEmpty ) begin
+				if ( accCnt_1 == 15 ) begin
+					accCnt_1 <= 0;
+				end else begin
+					accCnt_1 <= accCnt_1 + 1;
+				end
+			
+				accBufferQ.deq;
+				let prevD = accBufferQ.first;
+				for ( Integer x = 0; x < 3; x = x + 1 ) fpAdd32[x].enq(prevD[x], currD[x]);
 		end else begin
-			aOutQs[0].deq;
-			let d = aOutQs[0].first;
-			let v = accBuffer;
-
-			p[0] = v[0] + d[0];
-			p[1] = v[1] + d[1];
-			p[2] = v[2] + d[2];
-			p[3] = d[3];
-
-			accBuffer <= p;
-			accCnt <= accCnt + 1;
+			accBufferQ.enq(currD);
+			accCnt_1 <= accCnt_1 + 1;
 		end
+	endrule
+	FIFO#(Vector#(3, Bit#(32))) aOutQ <- mkFIFO;
+	Reg#(Bit#(8)) accCnt_2 <- mkReg(0);
+	rule accumulator2;
+		Vector#(3, Bit#(32)) acc = replicate(0);
+		for ( Integer x = 0; x < 3; x = x + 1 ) begin
+			fpAdd32[x].deq;
+			acc[x] = fpAdd32[x].first;
+		end
+
+		if ( accCnt_2 == 14 ) begin
+			aOutQ.enq(acc);
+			accCnt_2 <= 0;
+		end else begin
+			accBufferQ.enq(acc);
+			accCnt_2 <= accCnt_2 + 1;
+		end
+	
 	endrule
 
 	method Action iIn(Vector#(4, Bit#(32)) dataI);
@@ -237,7 +291,7 @@ module mkCalAccel(CalAccelIfc);
 	method Action jIn(Vector#(4, Bit#(32)) dataJ);
 		jInQs[0].enq(dataJ);
 	endmethod
-	method ActionValue#(Vector#(4, Bit#(32))) aOut;
+	method ActionValue#(Vector#(3, Bit#(32))) aOut;
 		aOutQ.deq;
 		return aOutQ.first;
 	endmethod
