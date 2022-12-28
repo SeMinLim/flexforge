@@ -86,6 +86,8 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	Reg#(Bool) stage2 <- mkReg(False);
 	Reg#(Bool) dramReaderPm <- mkReg(True);
 	Reg#(Bool) dramReaderV <- mkReg(False);
+	Reg#(Bool) dramProcUnitFirst <- mkReg(True);	
+	Reg#(Bit#(16)) startCnt <- mkReg(0);
 
 	Reg#(Bool) stage3 <- mkReg(False);
 	Reg#(Bool) dataOrganizerInPm <- mkReg(True);
@@ -105,6 +107,7 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	Reg#(Bool) stage6 <- mkReg(False);
 	Reg#(Bool) dramWriterPm <- mkReg(True);
 	Reg#(Bool) dramWriterV <- mkReg(False);
+	Reg#(Bit#(16)) doenCnt <- mkReg(0);
 	rule getCmd;
 		pcieWriteQ.deq;
 		let w = pcieWriteQ.first;
@@ -155,21 +158,26 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	// 
 	// This stage read the data from DRAM
 	//--------------------------------------------------------------------------------------------
+	FIFO#(Bit#(16)) dramProcUnitQ <- mkSizedBRAMFIFO(512);
+
 	Reg#(Bit#(64)) dramRdAddPm <- mkReg(0);
 	Reg#(Bit#(64)) dramRdAddV <- mkReg(268435456);
 
-	Reg#(Bit#(32)) dramRdPmCnt_1 <- mkReg(0);
+	Reg#(Bit#(16)) dramRdPmCnt_1 <- mkReg(0);
 	Reg#(Bit#(16)) dramRdPmCnt_2 <- mkReg(0);
 	
-	Reg#(Bit#(8)) dramRdVCnt_1 <- mkReg(0);
-	Reg#(Bit#(32)) dramRdVCnt_2 <- mkReg(0);	
+	Reg#(Bit#(16)) dramRdVCnt_1 <- mkReg(0);
+	Reg#(Bit#(16)) dramRdVCnt_2 <- mkReg(0);
+
 	rule dramReader( stage2 );
 		if ( dramReaderPm ) begin
 			if ( dramRdPmCnt_1 != 0 ) begin
 				let payload <- dramArbiter.access[0].users[0].read;
 				serializer128bPm.put(payload);
+				dramProcUnitQ.enq(dramRdPmCnt_2);
+
 				if ( dramRdPmCnt_1 == 256 ) begin
-					if ( dramRdPmCnt_2 == (fromInteger(wordsPm64Byte) - 1) ) begin
+					if ( dramRdPmCnt_2 == DramProcUnit - 1 ) begin
 						dramRdAddPm <= 0;
 						dramRdPmCnt_2 <= 0;
 
@@ -180,10 +188,8 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 						dramRdPmCnt_2 <= dramRdPmCnt_2 + 1;
 					end
 					dramRdPmCnt_1 <= 0;
-
 				end else begin
 					dramRdPmCnt_1 <= dramRdPmCnt_1 + 1;
-					dramRdPmCnt_2 <= dramRdPmCnt_2 + 1;
 				end
 			end else begin
 				dramArbiter.access[0].users[0].cmd(dramRdAddPm, 256, False); // Read 1024 particles
@@ -195,7 +201,7 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 				let payload <- dramArbiter.access[0].users[1].read;
 				serializer128bV.put(payload);
 				if ( dramRdVCnt_1 == 192 ) begin
-					if ( dramRdVCnt_2 == (fromInteger(wordsV64Byte) - 1) ) begin
+					if ( dramRdVCnt_2 == DramProcUnit - 1) ) begin
 						dramRdAddV <= 268435456;
 						dramRdVCnt_2 <= 0;
 					end else begin
@@ -208,14 +214,13 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 					dramReaderV <= False;
 
 					stage2 <= False;
-					stage6 <= True;
+					stage6 <= True; // Shut DRAM Reader down & Open DRAM Writer up
 				end else begin
 					dramRdVCnt_1 <= dramRdVCnt_1 + 1;
-					dramRdVCnt_2 <= dramRdVCnt_2 + 1;
 				end
 			end else begin
-				dramArbiter.access[0].users[1].cmd(dramRdAddV, 192, False);
-				memRdVCnt_1 <= memRdVCnt_1 + 1;
+				dramArbiter.access[0].users[1].cmd(dramRdAddV, 192, False); // Read 1024 particles
+				dramRdVCnt_1 <= dramRdVCnt_1 + 1;
 			end
 		end
 	endrule
@@ -224,29 +229,82 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	//
 	// This state splits the 512-bit payload to 32-bit data or merges the data to a payload
 	//-------------------------------------------------------------------------------------------------
-	FIFO#(Vector#(4, Bit#(32))) originDataPmQ_i <- mkSizedBRAMFIFO(1024); // Perfect!
-	FIFO#(Vector#(4, Bit#(32))) originDataPmQ_j <- mkSizedBRAMFIFO(1024);
+	FIFO#(Vector#(4, Bit#(32))) originDataPm_jQ <- mkSizedBRAMFIFO(1024);
+	
+	FIFO#(Vector#(3, Bit#(32))) originDataP_iQ <- mkSizedBRAMFIFO(2048);
+	FIFO#(Bit#(32)) originDataM_iQ <- mkSizedBRAMFIFO(2048);
+	Reg#(Bit#(16)) originDataPmQCnt <- mkReg(0);
+
 	FIFO#(Vector#(4, Bit#(32))) updatedDataPmQ <- mkSizedBRAMFIFO(1024);
+	
+	Reg#(Bit#(4)) dataOrganizerPmCnt <- mkReg(0);
 	rule dataOrganizerPm( stage3 );
 		if ( dataOrganizerInPm ) begin
 			Vector#(4, Bit#(32)) pm = replicate(0);
 			let d <- serializer128bPm.get;
-			
 			pm[0] = d[31:0]; // Position X 
 			pm[1] = d[63:32]; // Position Y
 			pm[2] = d[95:64]; // Position Z
 			pm[3] = d[127:96]; // Mass
-			
-			if ( dramReaderP_i ) begin
-				originDataPmQ_i.enq(pm);
-			end			
-			originDataPmQ_j.enq(pm);
 
-			stage4 <= True;
+			originDataPm_jQ.enq(pm); // Operand J
+
+			Bit#(16) dramProcUnitIdx = 0;
+			if ( dataOrganizerPmCnt != 0 ) begin
+				dramProcUnitIdx = dramProcUnitBuffer;
+				
+				if ( dramOrganizerPmCnt == 3 ) begin
+					dramOrganizerPmCnt <= 0;
+				end else begin
+					dramOrganizerPmCnt <= dramOrganizerPmCnt + 1;
+				end
+			end else begin
+				dramProcUnitQ.deq;
+				dramProcUnitIdx = dramProcUnitQ.first;
+				dramProcUnitBuffer <= dramProcUnitQ.first;
+
+				dataOrganizerPmCnt <= dataOrganizerPmCnt + 1;
+				stage4 <= True;
+			end
+		
+			if ( !dramProcUnitFirst ) begin
+				if ( startCnt - doneCnt < 2 ) begin
+					if ( dramProcUnitIdx == startCnt ) begin
+						Vector#(3, Bit#(32)) p = replicate(0);
+						if ( originDataPmQCnt == 1023 ) begin
+							originDataPmQCnt <= 0;
+							startCnt <= startCnt + 1;
+						end else begin
+							originDataPmQCnt <= originDataPmQCnt + 1;
+						end
+
+						for ( Integer i = 0; i < 3; i = i + 1 )  p[i] = pm[i];
+						originDataP_iQ.enq(p);
+						originDataM_iQ.enq(pm[3]);
+					end
+				end else begin
+				end
+			end else begin
+				Vector#(3, Bit#(32)) p = replicate(0);
+				if ( originDataPmQCnt == 2047 ) begin
+					dataOrganizerPmCnt <= 0;
+					startCnt <= startCnt + 2;
+					dramProcUnitFirst <= False;
+				end else begin
+					originDataPmQCnt <= originDataPmQCnt + 1;
+				end
+
+				for ( Integer i = 0; i < 3; i = i + 1 ) p[i] = pm[i];
+				originDataP_iQ.enq(p);
+				originDataM_iQ.enq(pm[3]);
+			end
 		end else if ( dataOrganizerOutPm ) begin
-			updatedDataPmQ.deq;
-			Vector#(4, Bit#(32)) v = updatedDataPmQ.first;
-			Bit#(128) d = (zeroExtend(v[3])) | (zeroExtend(v[2])) | (zeroExtend(v[1])) | (zeroExtend(v[0]));
+			updatedDataPQ.deq;
+			originDataM_iQ.deq;
+			Vector#(3, Bit#(32)) v = updatedDataPQ.first;
+			Bit#(32) v_3 = originDataM_iQ.first;
+
+			Bit#(128) d = (zeroExtend(v_3)) | (zeroExtend(v[2])) | (zeroExtend(v[1])) | (zeroExtend(v[0]));
 			
 			deserializer128bPm.put(d);
 		end
@@ -402,12 +460,12 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	// 
 	// This stage receives updated data from N-body app, goes to stage 3 and then goes to 6
 	//--------------------------------------------------------------------------------------------
-	Reg#(Bit#(8)) recvDataPmCnt <- mkReg(0);
+	Reg#(Bit#(8)) recvDataPCnt <- mkReg(0);
 	Reg#(Bit#(8)) recvDataVCnt <- mkReg(0);
 	rule dataReceiver( stage5 );
-		if ( dataReceiverPm ) begin
-			let d <- nbody.dataOutPm;
-			updatedDataPmQ.enq(d);
+		if ( dataReceiverP ) begin
+			let d <- nbody.dataOutP;
+			updatedDataPQ.enq(d);
 			if ( recvDataPmCnt != 0 ) begin
 				if ( recvDataPmCnt == BRAMFIFOSize - 1 ) begin
 					recvDataPmCnt <= 0;
