@@ -158,6 +158,7 @@ module mkCalAccelPe#(Bit#(PeWaysLog) peIdx) (CalAccelPeIfc);
 				frBufferQ.deq;
 				let prevFr = frBufferQ.first;
 				for ( Integer x = 0; x < 3; x = x + 1 ) fpAdd32[x].enq(prevFr[x], currFr[x]);
+			end
 		end else begin
 			accCnt_1 <= accCnt_1 + 1;
 			frBufferQ.enq(currFr);
@@ -261,6 +262,7 @@ module mkCalAccel(CalAccelIfc);
 				accBufferQ.deq;
 				let prevD = accBufferQ.first;
 				for ( Integer x = 0; x < 3; x = x + 1 ) fpAdd32[x].enq(prevD[x], currD[x]);
+			end
 		end else begin
 			accBufferQ.enq(currD);
 			accCnt_1 <= accCnt_1 + 1;
@@ -285,7 +287,7 @@ module mkCalAccel(CalAccelIfc);
 	
 	endrule
 
-	method Action iIn(Vector#(4, Bit#(32)) dataI);
+	method Action iIn(Vector#(3, Bit#(32)) dataI);
 		iInQs[0].enq(dataI);
 	endmethod
 	method Action jIn(Vector#(4, Bit#(32)) dataJ);

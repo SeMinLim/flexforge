@@ -215,7 +215,12 @@ int main(int argc, char** argv) {
 	//------------------------------------------------------------------------------------
 	int div = 32768;
 	int statCheckInit = 0;
-	int dataSendMode = 0;
+	int systemStartMode = 0;
+	printf( "N-body Calculation System On!\n" );
+	fflush( stdout );
+	pcie->userWriteWord(systemStartMode*4, 0);
+
+	int dataSendMode = 1;
 	unsigned int status = 0;
 	printf( "Started to send the values of the particles\n" );
 	fflush( stdout );
@@ -226,9 +231,9 @@ int main(int argc, char** argv) {
 			pcie->userWriteWord(dataSendMode*4, particleLocZv[(i*div)+j]);
 			pcie->userWriteWord(dataSendMode*4, particleMassv[(i*div)+j]);
 		}
-		printf( "Sent %dth position and mass values\n", ((i*div) + div) );
-		fflush( stdout );
-		sleep(1);
+		//printf( "Sent %dth position and mass values\n", ((i*div) + div) );
+		//fflush( stdout );
+		//sleep(1);
 	}
 
 	for ( int i = 0; i < NumParticles/div; i ++ ) {
@@ -257,7 +262,7 @@ int main(int argc, char** argv) {
 	//------------------------------------------------------------------------------
 	timespec start;
 	timespec now;
-	int mode = 1;
+	int mode = 2;
 	status = 0;
 	printf( "The system mode\n" );
 	printf( "1: Use only FPGA1\n" );
@@ -298,12 +303,7 @@ int main(int argc, char** argv) {
 	// Status check for finishing N-body App
 	//-------------------------------------------------------------------------------
 	double diff = timespec_diff_sec(start, now);
-
-	int getNumOfCycles = 2;
-	status = 0;
-	status = pcie->userReadWord(getNumOfCycles*4);
-	double ff = (double)status/diff;
-	printf( "FLOPs: %f\n", ff );
+	printf( "Elapsed Time: %f\n", diff );
 	fflush( stdout );
 
 	return 0;

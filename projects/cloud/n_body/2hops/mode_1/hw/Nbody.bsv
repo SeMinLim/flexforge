@@ -9,102 +9,148 @@ import FloatingPoint::*;
 import Float32::*;
 
 import CalAccel::*;
-import CalPmv::*;
-
+import CalPosit::*;
+import CalVeloc::*;
 
 Integer totalParticles = 16*1024*1024;
 
 
 interface NbodyIfc;
-	method Action dataPmIn(Vector#(4, Bit#(32)) originDataPm, Bit#(32) inputPmIdx);
+	method Action dataPIn_i(Vector#(3, Bit#(32)) originDataP_i);
+	method Action dataPmIn_j(Vector#(4, Bit#(32)) originDataPm_j);
+	method Action dataPIn(Vector#(3, Bit#(32)) originDataP);
 	method Action dataVIn(Vector#(3, Bit#(32)) originDataV);
-	method ActionValue#(Vector#(4, Bit#(32))) dataOutPm;
+	method ActionValue#(Vector#(3, Bit#(32))) dataOutP;
 	method ActionValue#(Vector#(3, Bit#(32))) dataOutV;
 endinterface
 module mkNbody(NbodyIfc);
-	FIFO#(Tuple2#(Vector#(4, Bit#(32)), Bit#(32))) dataPmQ <- mkFIFO;
+	Vector#(3, FpPairIfc#(32)) fpAdd32 <- replicateM(mkFpAdd32);
+
+	FIFO#(Vector#(3, Bit#(32))) accQ <- mkSizedBRAMFIFO(1024);
+
+	FIFO#(Vector#(3, Bit#(32))) dataP_iQ <- mkFIFO;
+	FIFO#(Vector#(4, Bit#(32))) dataPm_jQ <- mkFIFO;
+
+	FIFO#(Vector#(3, Bit#(32))) dataPQ <- mkFIFO;
 	FIFO#(Vector#(3, Bit#(32))) dataVQ <- mkFIFO;
-	FIFO#(Vector#(4, Bit#(32))) resultOutPmQ <- mkFIFO;
-	FIFO#(Vector#(3, Bit#(32))) resultOutVQ <- mkFIFO;
+
+	FIFO#(Vector#(3, Bit#(32))) resultOutPQ <- mkSizedBRAMFIFO(1024);
+	FIFO#(Vector#(3, Bit#(32))) resultOutVQ <- mkSizedBRAMFIFO(1024);
 
 	CalAccelIfc calAcc <- mkCalAccel;
 	CalPmvIfc calPmv <- mkCalPmv;
 
-	FIFOF#(Vector#(4, Bit#(32))) relayDataPmIQ <- mkSizedFIFOF(256);
-	FIFO#(Vector#(4, Bit#(32))) pInQ <- mkSizedBRAMFIFO(256);
-	Reg#(Bit#(32)) relayDataPmJCnt <- mkReg(0);
-	Reg#(Bool) relayDataPmIOn <- mkReg(True);
-	rule relayDataPmJ;
-		dataPmQ.deq;
-		Vector#(4, Bit#(32)) p = tpl_1(dataPmQ.first);
-		Bit#(32) idx = tpl_2(dataPmQ.first);
-
-		if ( relayDataPmIOn ) begin
-			if ( relayDataPmIQ.notFull ) begin
-				if ( relayDataPmJCnt == idx ) begin
-					if ( relayDataPmJCnt == (fromInteger(totalParticles) - 1) ) begin
-						relayDataPmJCnt <= 0;
-						relayDataPmIOn <= False;
-					end else begin
-						relayDataPmJCnt <= relayDataPmJCnt + 1;
-					end
-					relayDataPmIQ.enq(p);
-					pInQ.enq(p);
-				end
-			end
-		end
-		calAcc.jIn(p);
+	// Acceleration Input
+	rule relayDataPmI;
+		dataP_iQ.deq;
+		calAcc.iIn(dataP_iQ.first);
 	endrule
-	Reg#(Vector#(4, Bit#(32))) relayDataPmIBuffer <- mkReg(replicate(0));
-	Reg#(Bit#(32)) relayDataPmICnt <- mkReg(0);
-	rule relayDataPmI( relayDataPmIQ.notEmpty );
-		if ( relayDataPmICnt != 0 ) begin
-			let p = relayDataPmIBuffer;
-			calAcc.iIn(p);
-			if ( relayDataPmICnt == 524287 ) begin
-				relayDataPmICnt <= 0;
+	rule relayDataPmJ;
+		dataPm_jQ.deq;
+		calAcc.jIn(dataPm_jQ.first);
+	endrule
+	// Acceleration Output
+	Reg#(Bit#(16)) accCnt_1 <- mkReg(0);
+	Reg#(Bit#(16)) accCnt_2 <- mkReg(0);
+	Reg#(Bool) firstPhase <- mkReg(True);
+	rule accumulator1;
+		if ( !firstPhase ) begin
+			accQ.deq;
+			let prevA = accQ.first;
+			let currA <- calAcc.aOut;
+
+			for ( Integer x = 0; x < 3; x = x + 1 ) fpAdd32[x].enq(prevA[x], currA[x]);
+
+			if ( accCnt_1 == 1023 ) begin
+				if ( accCnt_2 == 16383 ) begin
+					accCnt_2 <= 0;
+					firstPhase <= True;
+				end else begin
+					accCnt_2 <= accCnt_2 + 1;
+				end
+				accCnt_1 <= 0;
 			end else begin
-				relayDataPmICnt <= relayDataPmICnt + 1;
+				accCnt_1 <= accCnt_1 + 1;
 			end
 		end else begin
-			relayDataPmIQ.deq;
-			Vector#(4, Bit#(32)) p = relayDataPmIQ.first;
-			relayDataPmIBuffer <= p;
-			calAcc.iIn(p);
-			relayDataPmICnt <= relayDataPmICnt + 1;
+			let a <- calAcc.aOut;
+			accQ.enq(a);
+
+			if ( accCnt_1 == 1023 ) begin
+				accCnt_1 <= 0;
+				accCnt_2 <= accCnt_2 + 1;
+				firstPhase <= False;	
+			end else begin
+				accCnt_1 <= accCnt_1 + 1;
+			end
 		end
 	endrule
-	rule relayDataA;
-		let d <- calAcc.aOut;
-		calPmv.aIn(d);
+	Reg#(Bit#(16)) accCnt_3 <- mkReg(0);
+	Reg#(Bit#(16)) accCnt_4 <- mkReg(0);
+	rule accumulator2;
+		Vector#(3, Bit#(32)) a = replicate(0);
+		for ( Integer x = 0; x < 3; x = x + 1 ) begin
+			fpAdd32[x].deq;
+			a[x] = fpAdd32[x].first;
+		end
+
+		if ( accCnt_3 == 16382 ) begin
+			if ( accCnt_4 == 1022 ) begin
+				accCnt_4 <= 0;
+				accCnt_3 <= 0;
+			end else begin
+				accCnt_4 <= accCnt_4 + 1;
+			end
+			calPosit.aIn(a); 
+			calVeloc.aIn(a);
+		end else begin
+			if ( accCnt_4 == 1022 ) begin
+				accCnt_4 <= 0;
+				accCnt_3 <= accCnt_3 + 1;
+			end else begin
+				accCnt_4 <= accCnt_4 + 1;
+			end
+		end
 	endrule
+	
+	// Position & Velocity Input
 	rule relayDataV;
 		dataVQ.deq;
-		let d = dataVQ.first;
-		calPmv.vIn(d);
+		let v = dataVQ.first;
+		calPosit.vIn(v);
+		calVeloc.vIn(v);
 	endrule
 	rule relayDataP;
-		pInQ.deq;
-		let p = pInQ.first;
-		calPmv.pIn(p);
+		dataPQ.deq;
+		let p = dataPQ.first;
+		calPosit.pIn(p);
 	endrule
-	rule recvResultPm;
-		let res <- calPmv.pmOut;
-		resultOutPmQ.enq(res);
+
+	// Position & Velocity Output
+	rule recvResultP;
+		let res <- calPmv.pOut;
+		resultOutPQ.enq(res);
 	endrule
 	rule recvResultV;
 		let res <- calPmv.vOut;
 		resultOutVQ.enq(res);
 	endrule
-	method Action dataPmIn(Vector#(4, Bit#(32)) originDataPm, Bit#(32) inputPmIdx);
-		dataPmQ.enq(tuple2(originDataPm, inputPmIdx));
+
+	method Action dataPIn_i(Vector#(3, Bit#(32)) originDataP_i);
+		dataP_iQ.enq(originDataP_i);
+	endmethod
+	method Action dataPmIn_j(Vector#(4, Bit#(32)) originDataPm_j);
+		dataPm_jQ.enq(originDataPm_j);
+	endmethod
+	method Action dataPIn(Vector#(3, Bit#(32)) originDataP);
+		dataPQ.enq(originDataP);
 	endmethod
 	method Action dataVIn(Vector#(3, Bit#(32)) originDataV);
 		dataVQ.enq(originDataV);
 	endmethod
-	method ActionValue#(Vector#(4, Bit#(32))) dataOutPm;
-		resultOutPmQ.deq;
-		return resultOutPmQ.first;
+	method ActionValue#(Vector#(3, Bit#(32))) dataOutP;
+		resultOutPQ.deq;
+		return resultOutPQ.first;
 	endmethod
 	method ActionValue#(Vector#(3, Bit#(32))) dataOutV;
 		resultOutVQ.deq;

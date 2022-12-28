@@ -8,33 +8,33 @@ import BRAMFIFO::*;
 import FloatingPoint::*;
 import Float32::*;
 
-typedef 5 PeWaysLog;
+typedef 3 PeWaysLog;
 typedef TExp#(PeWaysLog) PeWays;
 
 Integer totalParticles = 16*1024*1024;
 
 
-interface CalPmvPeIfc;
-	method Action putA(Vector#(4, Bit#(32)) a);
+interface CalPositPeIfc;
+	method Action putA(Vector#(3, Bit#(32)) a);
 	method Action putV(Vector#(3, Bit#(32)) v);
-	method Action putP(Vector#(4, Bit#(32)) p);
-	method ActionValue#(Vector#(4, Bit#(32))) resultGetPm;
+	method Action putP(Vector#(3, Bit#(32)) p);
+	method ActionValue#(Vector#(3, Bit#(32))) resultGetP;
 	method ActionValue#(Vector#(3, Bit#(32))) resultGetV;
-	method Bool resultExistPm;
+	method Bool resultExistP;
 	method Bool resultExistV;
 endinterface
-module mkCalPmvPe#(Bit#(PeWaysLog) peIdx)(CalPmvPeIfc);
-	FIFO#(Vector#(4, Bit#(32))) inputAQ <- mkFIFO;
+module mkCalPositPe#(Bit#(PeWaysLog) peIdx)(CalPmvPeIfc);
+	FIFO#(Vector#(3, Bit#(32))) inputAQ <- mkFIFO;
 	FIFO#(Vector#(3, Bit#(32))) inputVQ <- mkFIFO;
-	FIFO#(Vector#(4, Bit#(32))) inputPQ <- mkFIFO;
-	FIFOF#(Vector#(4, Bit#(32))) outputPmQ <- mkFIFOF;
+	FIFO#(Vector#(3, Bit#(32))) inputPQ <- mkFIFO;
+	FIFOF#(Vector#(3, Bit#(32))) outputPQ <- mkFIFOF;
 	FIFOF#(Vector#(3, Bit#(32))) outputVQ <- mkFIFOF;
 
 	Vector#(9, FpPairIfc#(32)) fpAdd32 <- replicateM(mkFpAdd32);
 	Vector#(3, FpPairIfc#(32)) fpMult32 <- replicateM(mkFpMult32);
 
-	FIFO#(Vector#(4, Bit#(32))) inputPosAQ <- mkFIFO;
-	FIFO#(Vector#(4, Bit#(32))) inputVelAQ <- mkFIFO;
+	FIFO#(Vector#(3, Bit#(32))) inputPosAQ <- mkFIFO;
+	FIFO#(Vector#(3, Bit#(32))) inputVelAQ <- mkFIFO;
 	rule replicateA;
 		inputAQ.deq;
 		let d = inputAQ.first;
@@ -50,15 +50,12 @@ module mkCalPmvPe#(Bit#(PeWaysLog) peIdx)(CalPmvPeIfc);
 		inputVelVQ.enq(d);
 	endrule
 
-	FIFO#(Bit#(32)) massIQ <- mkFIFO;
 	rule calPos1;
 		inputPosAQ.deq;
 		let a = inputPosAQ.first;
 		Bit#(32) scale = 32'b00111111000000000000000000000000;
 		
 		for ( Integer x = 0; x < 3; x = x + 1 ) fpMult32[x].enq(scale, a[x]);
-		
-		massIQ.enq(a[3]);
 	endrule
 	rule calPos2;
 		inputPosVQ.deq;
@@ -79,16 +76,13 @@ module mkCalPmvPe#(Bit#(PeWaysLog) peIdx)(CalPmvPeIfc);
 		end
 	endrule
 	rule calPos4;
-		Vector#(4, Bit#(32)) fr = replicate(0);
+		Vector#(3, Bit#(32)) fr = replicate(0);
 		for ( Integer x = 0; x < 3; x = x + 1 ) begin
 			fpAdd32[x+3].deq;
 			fr[x] = fpAdd32[x+3].first;
 		end
 		
-		massIQ.deq;
-		fr[3] = massIQ.first;
-
-		outputPmQ.enq(fr);
+		outputPQ.enq(fr);
 	endrule
 
 	rule calVel1;
@@ -109,25 +103,25 @@ module mkCalPmvPe#(Bit#(PeWaysLog) peIdx)(CalPmvPeIfc);
 		outputVQ.enq(fr);
 	endrule
 
-	method Action putA(Vector#(4, Bit#(32)) a);
+	method Action putA(Vector#(3, Bit#(32)) a);
 		inputAQ.enq(a);
 	endmethod
-	method Action putP(Vector#(4, Bit#(32)) p);
+	method Action putP(Vector#(3, Bit#(32)) p);
 		inputPQ.enq(p);
 	endmethod 
 	method Action putV(Vector#(3, Bit#(32)) v);
 		inputVQ.enq(v);
 	endmethod
-	method ActionValue#(Vector#(4, Bit#(32))) resultGetPm;
-		outputPmQ.deq;
-		return outputPmQ.first;
+	method ActionValue#(Vector#(3, Bit#(32))) resultGetP;
+		outputPQ.deq;
+		return outputPQ.first;
 	endmethod
 	method ActionValue#(Vector#(3, Bit#(32))) resultGetV;
 		outputVQ.deq;
 		return outputVQ.first;
 	endmethod
-	method Bool resultExistPm;
-		return outputPmQ.notEmpty;
+	method Bool resultExistP;
+		return outputPQ.notEmpty;
 	endmethod
 	method Bool resultExistV;
 		return outputVQ.notEmpty;
@@ -135,19 +129,19 @@ module mkCalPmvPe#(Bit#(PeWaysLog) peIdx)(CalPmvPeIfc);
 endmodule
 
 
-interface CalPmvIfc;
-	method Action aIn(Vector#(4, Bit#(32)) a);
+interface CalPositIfc;
+	method Action aIn(Vector#(3, Bit#(32)) a);
 	method Action vIn(Vector#(3, Bit#(32)) v);
-	method Action pIn(Vector#(4, Bit#(32)) p);
-	method ActionValue#(Vector#(4, Bit#(32))) pmOut;
+	method Action pIn(Vector#(3, Bit#(32)) p);
+	method ActionValue#(Vector#(3, Bit#(32))) pOut;
 	method ActionValue#(Vector#(3, Bit#(32))) vOut;
 endinterface
-module mkCalPmv(CalPmvIfc);
+module mkCalPosit(CalPositIfc);
 	Vector#(PeWays, CalPmvPeIfc) pes;
-	Vector#(PeWays, FIFO#(Vector#(4, Bit#(32)))) aInQs <- replicateM(mkFIFO);
+	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) aInQs <- replicateM(mkFIFO);
 	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) vInQs <- replicateM(mkFIFO);
-	Vector#(PeWays, FIFO#(Vector#(4, Bit#(32)))) pInQs <- replicateM(mkFIFO);
-	Vector#(PeWays, FIFO#(Vector#(4, Bit#(32)))) pmOutQs <- replicateM(mkFIFO);
+	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) pInQs <- replicateM(mkFIFO);
+	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) pOutQs <- replicateM(mkFIFO);
 	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) vOutQs <- replicateM(mkFIFO);
 
 	for ( Integer i = 0; i < valueOf(PeWays); i = i + 1 ) begin
@@ -189,13 +183,13 @@ module mkCalPmv(CalPmvIfc);
 				pes[i].putV(d);
 			end
 		endrule
-		rule forwardResultPm;
-			if ( pes[i].resultExistPm ) begin
-				let d <- pes[i].resultGetPm;
-				pmOutQs[i].enq(d);
+		rule forwardResultP;
+			if ( pes[i].resultExistP ) begin
+				let d <- pes[i].resultGetP;
+				pOutQs[i].enq(d);
 			end else if ( i < (valueOf(PeWays) - 1) ) begin
-				pmOutQs[i+1].deq;
-				pmOutQs[i].enq(pmOutQs[i+1].first);
+				pOutQs[i+1].deq;
+				pOutQs[i].enq(pOutQs[i+1].first);
 			end
 		endrule
 		rule forwardResultV;
@@ -208,18 +202,18 @@ module mkCalPmv(CalPmvIfc);
 			end
 		endrule
 	end
-	method Action aIn(Vector#(4, Bit#(32)) a);
+	method Action aIn(Vector#(3, Bit#(32)) a);
 		aInQs[0].enq(a);
 	endmethod
 	method Action vIn(Vector#(3, Bit#(32)) v);
 		vInQs[0].enq(v);
 	endmethod
-	method Action pIn(Vector#(4, Bit#(32)) p);
+	method Action pIn(Vector#(3, Bit#(32)) p);
 		pInQs[0].enq(p);
 	endmethod
-	method ActionValue#(Vector#(4, Bit#(32))) pmOut;
-		pmOutQs[0].deq;
-		return pmOutQs[0].first;
+	method ActionValue#(Vector#(3, Bit#(32))) pOut;
+		pOutQs[0].deq;
+		return pOutQs[0].first;
 	endmethod
 	method ActionValue#(Vector#(3, Bit#(32))) vOut;
 		vOutQs[0].deq;
