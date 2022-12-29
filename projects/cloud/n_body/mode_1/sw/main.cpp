@@ -289,8 +289,7 @@ int main(int argc, char** argv) {
 		while ( 1 ) {
 			status = pcie->userReadWord(statCheckNbody*4);
 			if ( status == 1 ) {
-				printf( "read done(%d/4194304)\n", k );
-				//printf( "Computing N-body app & writing the 256 updated data to memory done!\n" );
+				printf( "Computing N-body app & writing the 1024 updated data to memory done!\n" );
 				fflush( stdout );
 				break;
 			}
