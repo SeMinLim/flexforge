@@ -37,17 +37,18 @@ module mkNbody(NbodyIfc);
 	FIFO#(Vector#(3, Bit#(32))) resultOutPQ <- mkSizedBRAMFIFO(1024);
 	FIFO#(Vector#(3, Bit#(32))) resultOutVQ <- mkSizedBRAMFIFO(1024);
 
-	CalAccelIfc calAcc <- mkCalAccel;
-	CalPmvIfc calPmv <- mkCalPmv;
+	CalAccelIfc calAccel <- mkCalAccel;
+	CalPositIfc calPosit <- mkCalPosit;
+	CalVelocIfc calVeloc <- mkCalVeloc;
 
 	// Acceleration Input
 	rule relayDataPmI;
 		dataP_iQ.deq;
-		calAcc.iIn(dataP_iQ.first);
+		calAccel.iIn(dataP_iQ.first);
 	endrule
 	rule relayDataPmJ;
 		dataPm_jQ.deq;
-		calAcc.jIn(dataPm_jQ.first);
+		calAccel.jIn(dataPm_jQ.first);
 	endrule
 	// Acceleration Output
 	Reg#(Bit#(16)) accCnt_1 <- mkReg(0);
@@ -57,7 +58,7 @@ module mkNbody(NbodyIfc);
 		if ( !firstPhase ) begin
 			accQ.deq;
 			let prevA = accQ.first;
-			let currA <- calAcc.aOut;
+			let currA <- calAccel.aOut;
 
 			for ( Integer x = 0; x < 3; x = x + 1 ) fpAdd32[x].enq(prevA[x], currA[x]);
 
@@ -73,7 +74,7 @@ module mkNbody(NbodyIfc);
 				accCnt_1 <= accCnt_1 + 1;
 			end
 		end else begin
-			let a <- calAcc.aOut;
+			let a <- calAccel.aOut;
 			accQ.enq(a);
 
 			if ( accCnt_1 == 1023 ) begin
@@ -128,11 +129,11 @@ module mkNbody(NbodyIfc);
 
 	// Position & Velocity Output
 	rule recvResultP;
-		let res <- calPmv.pOut;
+		let res <- calPosit.pOut;
 		resultOutPQ.enq(res);
 	endrule
 	rule recvResultV;
-		let res <- calPmv.vOut;
+		let res <- calVeloc.vOut;
 		resultOutVQ.enq(res);
 	endrule
 

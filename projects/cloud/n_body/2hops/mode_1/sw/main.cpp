@@ -213,7 +213,7 @@ int main(int argc, char** argv) {
 	//------------------------------------------------------------------------------------
 	// Send the values of the particles through PCIe first & Check all data are stored well
 	//------------------------------------------------------------------------------------
-	int div = 32768;
+	int div = 65536;
 	int statCheckInit = 0;
 	int systemStartMode = 0;
 	printf( "N-body Calculation System On!\n" );
@@ -231,8 +231,8 @@ int main(int argc, char** argv) {
 			pcie->userWriteWord(dataSendMode*4, particleLocZv[(i*div)+j]);
 			pcie->userWriteWord(dataSendMode*4, particleMassv[(i*div)+j]);
 		}
-		//printf( "Sent %dth position and mass values\n", ((i*div) + div) );
-		//fflush( stdout );
+		printf( "Sent %dth position and mass values\n", ((i*div) + div) );
+		fflush( stdout );
 		//sleep(1);
 	}
 
@@ -242,8 +242,8 @@ int main(int argc, char** argv) {
 			pcie->userWriteWord(dataSendMode*4, particleVelYv[(i*div)+j]);
 			pcie->userWriteWord(dataSendMode*4, particleVelZv[(i*div)+j]);
 		}
-		//printf( "Sent %dth velocity values\n", ((i*div) + div) );
-		//fflush( stdout );
+		printf( "Sent %dth velocity values\n", ((i*div) + div) );
+		fflush( stdout );
 		//sleep(1);
 	}
 	printf( "Sending the values of the particles done!\n" );
