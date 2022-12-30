@@ -11,19 +11,7 @@
 #include "bdbmpcie.h"
 #include "dmasplitter.h"
 
-// AuroraExt117
-// 0 means X1Y16, 1 means X1Y17
-// 2 means X1Y18, 3 means X1Y19
-// AuroraExt119
-// 4 means X1Y24, 5 means X1Y25
-// 6 means X1Y26, 7 means X1Y27
-
-#define FPGA1_1 1
-#define FPGA2_1 2
-#define FPGA1_2 3
-#define FPGA2_2 4
-
-#define NumParticles 16777216
+#define NumParticles 1024
 
 #define MAX_MIXING_COUNT 1000
 
@@ -58,7 +46,7 @@ int main(int argc, char** argv) {
 	int x = 0, y = 0;
 	float tmp = 0;
 	float* particleLocX = (float*)malloc(sizeof(float)*NumParticles);
-	float locX = -83.88607;
+	float locX = 0.00000;
 	for ( int i = 0; i < NumParticles; i ++ ) {
 		particleLocX[i] = locX;
 		locX = locX + 0.00001;
@@ -80,7 +68,7 @@ int main(int argc, char** argv) {
 	x = 0, y = 0;
 	tmp = 0;
 	float* particleLocY = (float*)malloc(sizeof(float)*NumParticles);
-	float locY = -83.88607;
+	float locY = 0.00000;
 	for ( int i = 0; i < NumParticles; i ++ ) {
 		particleLocY[i] = locY;
 		locY = locY + 0.00001;
@@ -102,7 +90,7 @@ int main(int argc, char** argv) {
 	x = 0, y = 0;
 	tmp = 0;
 	float* particleLocZ = (float*)malloc(sizeof(float)*NumParticles);
-	float locZ = -83.88607;
+	float locZ = 0.00000;
 	for ( int i = 0; i < NumParticles; i ++ ) {
 		particleLocZ[i] = locZ;
 		locY = locY + 0.00001;
@@ -213,23 +201,21 @@ int main(int argc, char** argv) {
 	//------------------------------------------------------------------------------------
 	// Send the values of the particles through PCIe first & Check all data are stored well
 	//------------------------------------------------------------------------------------
-	int div = 65536;
-	int statCheckInit = 0;
-	int systemStartMode = 0;
+	int systemOn = 0;
+	pcie->userWriteWord(systemOn*4, 0);
 	printf( "N-body Calculation System On!\n" );
 	fflush( stdout );
-	pcie->userWriteWord(systemStartMode*4, 0);
 
-	int dataSendMode = 1;
-	unsigned int status = 0;
+	int stage_1 = 1;
+	int div = 1024;
 	printf( "Started to send the values of the particles\n" );
 	fflush( stdout );
 	for ( int i = 0; i < NumParticles/div; i ++ ) {
 		for ( int j = 0; j < div; j ++ ) {
-			pcie->userWriteWord(dataSendMode*4, particleLocXv[(i*div)+j]);
-			pcie->userWriteWord(dataSendMode*4, particleLocYv[(i*div)+j]);
-			pcie->userWriteWord(dataSendMode*4, particleLocZv[(i*div)+j]);
-			pcie->userWriteWord(dataSendMode*4, particleMassv[(i*div)+j]);
+			pcie->userWriteWord(stage_1*4, particleLocXv[(i*div)+j]);
+			pcie->userWriteWord(stage_1*4, particleLocYv[(i*div)+j]);
+			pcie->userWriteWord(stage_1*4, particleLocZv[(i*div)+j]);
+			pcie->userWriteWord(stage_1*4, particleMassv[(i*div)+j]);
 		}
 		printf( "Sent %dth position and mass values\n", ((i*div) + div) );
 		fflush( stdout );
@@ -238,9 +224,9 @@ int main(int argc, char** argv) {
 
 	for ( int i = 0; i < NumParticles/div; i ++ ) {
 		for ( int j = 0; j < div; j ++ ) {
-			pcie->userWriteWord(dataSendMode*4, particleVelXv[(i*div)+j]);
-			pcie->userWriteWord(dataSendMode*4, particleVelYv[(i*div)+j]);
-			pcie->userWriteWord(dataSendMode*4, particleVelZv[(i*div)+j]);
+			pcie->userWriteWord(stage_1*4, particleVelXv[(i*div)+j]);
+			pcie->userWriteWord(stage_1*4, particleVelYv[(i*div)+j]);
+			pcie->userWriteWord(stage_1*4, particleVelZv[(i*div)+j]);
 		}
 		printf( "Sent %dth velocity values\n", ((i*div) + div) );
 		fflush( stdout );
@@ -249,8 +235,10 @@ int main(int argc, char** argv) {
 	printf( "Sending the values of the particles done!\n" );
 	fflush( stdout );
 
+	int statusCheck_1 = 0;
+	unsigned int status = 0;
 	while ( 1 ) {
-		status = pcie->userReadWord(statCheckInit*4);
+		status = pcie->userReadWord(statusCheck_1*4);
 		if ( status == 1 ) {
 			printf( "Storing the values of the particles to DRAM done!\n\n" );
 			fflush( stdout );
@@ -262,8 +250,7 @@ int main(int argc, char** argv) {
 	//------------------------------------------------------------------------------
 	timespec start;
 	timespec now;
-	int mode = 2;
-	status = 0;
+	int stage_2 = 2;
 	printf( "The system mode\n" );
 	printf( "1: Use only FPGA1\n" );
 	printf( "2: Use both FPGA1 and FPGA2 with 1 Aurora lane (2hops)\n" );
@@ -271,9 +258,9 @@ int main(int argc, char** argv) {
 	printf( "4: Use both FPGA1 and FPGA2 with 3 Aurora lanes (2hops)\n" );
 	printf( "5: Use both FPGA1 and FPGA2 with 4 Aurora lanes (2hops)\n" );
 	printf( "6: Use both FPGA1 and FPGA2 with 1 Aurora lane (4hops)\n" );
-	printf( "Mode: %d\n\n", mode);
+	printf( "Mode: 1" );
 	fflush( stdout );
-	pcie->userWriteWord(mode*4, 0);
+	pcie->userWriteWord(stage_2*4, 0);
 
 	printf( "No need to send the data from FPGA1 to FPGA2\n" );
 	printf( "Started to compute N-body App\n\n" );
@@ -283,18 +270,17 @@ int main(int argc, char** argv) {
 	//-------------------------------------------------------------------------------	
 	// Status check over running N-body
 	//-------------------------------------------------------------------------------
-	int statCheckNbody = 1;
+	int statusCheck_2 = 1;
 	status = 0;
-	for ( int k = 0; k < 4*1024*1024; k ++ ) {
-		while ( 1 ) {
-			status = pcie->userReadWord(statCheckNbody*4);
-			if ( status == 1 ) {
-				printf( "Computing N-body app & writing the 1024 updated data to memory done!\n" );
-				fflush( stdout );
-				break;
-			}
+	while ( 1 ) {
+		status = pcie->userReadWord(statusCheck_2*4);
+		if ( status == 1 ) {
+			printf( "Computing N-body app & writing the 1024 updated data to memory done!\n" );
+			fflush( stdout );
+			break;
 		}
 	}
+	
 	clock_gettime(CLOCK_REALTIME, & now);
 	printf( "\n" );
 	fflush( stdout );
