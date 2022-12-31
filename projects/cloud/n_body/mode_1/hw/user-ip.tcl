@@ -1,5 +1,5 @@
-set ddr3dir ../../../../../../../../bluespecpcie/dram/vc707/
-set fpcaldir ../../../../../../../../bluelib/src/coregen/vc707
+set ddr3dir ../../../../../../../bluespecpcie/dram/vc707/
+set fpcaldir ../../../../../../../bluelib/src/coregen/vc707
 
 ############# DDR3 Stuff
 read_ip $ddr3dir/core/ddr3_0/ddr3_0.xci

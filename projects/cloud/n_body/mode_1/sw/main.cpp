@@ -217,8 +217,8 @@ int main(int argc, char** argv) {
 			pcie->userWriteWord(stage_1*4, particleLocZv[(i*div)+j]);
 			pcie->userWriteWord(stage_1*4, particleMassv[(i*div)+j]);
 		}
-		printf( "Sent %dth position and mass values\n", ((i*div) + div) );
-		fflush( stdout );
+		//printf( "Sent %dth position and mass values\n", ((i*div) + div) );
+		//fflush( stdout );
 		//sleep(1);
 	}
 
@@ -228,23 +228,23 @@ int main(int argc, char** argv) {
 			pcie->userWriteWord(stage_1*4, particleVelYv[(i*div)+j]);
 			pcie->userWriteWord(stage_1*4, particleVelZv[(i*div)+j]);
 		}
-		printf( "Sent %dth velocity values\n", ((i*div) + div) );
-		fflush( stdout );
+		//printf( "Sent %dth velocity values\n", ((i*div) + div) );
+		//fflush( stdout );
 		//sleep(1);
 	}
 	printf( "Sending the values of the particles done!\n" );
 	fflush( stdout );
 
-	int statusCheck_1 = 0;
+	int statusCheck = 0;
 	unsigned int status = 0;
-	while ( 1 ) {
+	/*while ( 1 ) {
 		status = pcie->userReadWord(statusCheck_1*4);
 		if ( status == 1 ) {
 			printf( "Storing the values of the particles to DRAM done!\n\n" );
 			fflush( stdout );
 			break;
 		}
-	}
+	}*/
 	//------------------------------------------------------------------------------	
 	// Send a command to HW to start running N-body
 	//------------------------------------------------------------------------------
@@ -258,7 +258,7 @@ int main(int argc, char** argv) {
 	printf( "4: Use both FPGA1 and FPGA2 with 3 Aurora lanes (2hops)\n" );
 	printf( "5: Use both FPGA1 and FPGA2 with 4 Aurora lanes (2hops)\n" );
 	printf( "6: Use both FPGA1 and FPGA2 with 1 Aurora lane (4hops)\n" );
-	printf( "Mode: 1" );
+	printf( "Mode: 1\n\n" );
 	fflush( stdout );
 	pcie->userWriteWord(stage_2*4, 0);
 
@@ -266,30 +266,32 @@ int main(int argc, char** argv) {
 	printf( "Started to compute N-body App\n\n" );
 	fflush( stdout );	
 
-	clock_gettime(CLOCK_REALTIME, & start);
+	//clock_gettime(CLOCK_REALTIME, & start);
 	//-------------------------------------------------------------------------------	
 	// Status check over running N-body
 	//-------------------------------------------------------------------------------
-	int statusCheck_2 = 1;
+	sleep(60);
+	statusCheck = 0;
 	status = 0;
-	while ( 1 ) {
-		status = pcie->userReadWord(statusCheck_2*4);
+	for ( int i = 0; i < 3; i ++ ) {
+		status = pcie->userReadWord(statusCheck*4);
 		if ( status == 1 ) {
 			printf( "Computing N-body app & writing the 1024 updated data to memory done!\n" );
 			fflush( stdout );
 			break;
 		}
+		sleep(60);
 	}
 	
-	clock_gettime(CLOCK_REALTIME, & now);
-	printf( "\n" );
-	fflush( stdout );
+	//clock_gettime(CLOCK_REALTIME, & now);
+	//printf( "\n" );
+	//fflush( stdout );
 	//-------------------------------------------------------------------------------	
 	// Status check for finishing N-body App
 	//-------------------------------------------------------------------------------
-	double diff = timespec_diff_sec(start, now);
-	printf( "Elapsed Time: %f\n", diff );
-	fflush( stdout );
+	//double diff = timespec_diff_sec(start, now);
+	//printf( "Elapsed Time: %f\n", diff );
+	//fflush( stdout );
 
 	return 0;
 }

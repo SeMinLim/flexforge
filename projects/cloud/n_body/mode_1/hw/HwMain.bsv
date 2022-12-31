@@ -15,18 +15,17 @@ import DRAMArbiterRemote::*;
 
 import Nbody::*;
 
+// 1024 particles
+// 1 particle has 7 32-bit floating point values
+// 3 position, 1 mass, and 3 velocity values
+Integer particles = 1024;
+Integer byteTotal = 7*1024*4;
+Integer wordsTotal64Byte = 7*64;
+Integer wordsPos64Byte = 4*64;
+Integer wordsVel64Byte = 3*64;
 
-Integer byteTotal = 16*1024*1024*4;
-Integer wordsTotal64Byte = 7*1024*1024;
-Integer wordsPm64Byte = 4*1024*1024;
-Integer wordsV64Byte = 3*1024*1024;
-
-Integer particles = 16777216;
-Integer unitParticles = 1024;
-Integer dramProcUnit = 16384;
-
-Integer bramFifoSize = 1024;
 Integer totalReplicate = 1024;
+Integer bramFifoSize = 1024;
 
 
 interface HwMainIfc;
@@ -46,6 +45,10 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	rule incCycleCount;
 		cycleCount <= cycleCount + 1;
 	endrule
+
+	BRAM_Configure cfg = defaultValue;
+	cfg.memorySize = 1024*128;
+	BRAM2Port#(Bit#(32), Vector#(4, Bit#(32))) bram <- mkBRAM2Server(cfg);
 
 	DeSerializerIfc#(32, 16) deserializer32b <- mkDeSerializer;
 	DeSerializerIfc#(128, 4) deserializer128bPos <- mkDeSerializer;
@@ -79,21 +82,22 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	// Get Commands from Host via PCIe
 	//--------------------------------------------------------------------------------------------	
 	FIFOF#(Bit#(32)) statusCheckerQ <- mkFIFOF;
-
+	// Initial Setting
 	Reg#(Bool) stage1 <- mkReg(False);
-
+	// DRAM Reader
 	Reg#(Bool) stage2 <- mkReg(False);
 	Reg#(Bool) dramReaderPos <- mkReg(True);
 	Reg#(Bool) dramReaderVel <- mkReg(False);
-
+	// Data Organizer
 	Reg#(Bool) stage3 <- mkReg(False);
-
+	// Data Relayer
 	Reg#(Bool) stage4 <- mkReg(False);
-
+	Reg#(Bool) bramWriteDone <- mkReg(False);
+	// Data Receiver
 	Reg#(Bool) stage5 <- mkReg(False);
 	Reg#(Bool) dataReceiverPos <- mkReg(True);
 	Reg#(Bool) dataReceiverVel <- mkReg(False);
-
+	// DRAM Writer
 	Reg#(Bool) stage6 <- mkReg(False);
 	Reg#(Bool) dramWriterPos <- mkReg(True);
 	Reg#(Bool) dramWriterVel <- mkReg(False);
@@ -109,22 +113,23 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 			stage1 <= True;
 		end else if ( off == 1 ) begin
 			deserializer32b.put(d);
+			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Initial setting start!\n", cycleCount);
 		end else if ( off == 2 ) begin 
 			stage2 <= True;	
-			cycleStart <= cycleCount;
+			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: System start!\n", cycleCount);
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------
 	// Usage of the entire memory
 	//  For Mode 1
-	//   OriginPmAdd => 0 ~ 268,435,455                  OriginVAdd => 268,435,456 ~ 469,762,047
-	//   UpdatedPmAdd => 469,762,048 ~ 738,197,503       UpdatedVAdd => 738,197,504 ~ 939,524,095
+	//   OriginPosAdd => 0 ~ 16,383                  OriginVelAdd => 16,384 ~ 28,671
+	//   UpdatePosAdd => 28,672 ~ 45,055             UpdateVelAdd => 45,056 ~ 57,343
 	//--------------------------------------------------------------------------------------------
 	// Stage 1 (Initial Setting)
 	//
 	// This stage writes the data take from the host through PCIe to DRAM
 	//--------------------------------------------------------------------------------------------
-	Reg#(Bit#(32)) dramWrInitCnt <- mkReg(0); // Perfect!
+	Reg#(Bit#(32)) dramWrInitCnt <- mkReg(0); // Perfect!!!
 	rule dramWriterInit( stage1 );
 		if ( dramWrInitCnt != 0 ) begin
 			let payload <- deserializer32b.get;
@@ -133,8 +138,8 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 				dramWrInitCnt <= 0;
 				stage1 <= False;
 
-				statusCheckerQ.enq(1); // Check dram writer initial set done
-				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage1\033[0m: Initial setting done!\n", cycleCount);
+				//statusCheckerQ.enq(1); // Check dram writer initial set done
+				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Initial setting \033[1;32mdone!\n", cycleCount);
 			end else begin
 				dramWrInitCnt <= dramWrInitCnt + 1;
 			end
@@ -148,8 +153,8 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	// 
 	// This stage read the data from DRAM
 	//--------------------------------------------------------------------------------------------
-	Reg#(Bit#(64)) dramRdAddPos <- mkReg(0);
-	Reg#(Bit#(64)) dramRdAddVel <- mkReg(268435456);
+	Reg#(Bit#(64)) dramRdAddPos <- mkReg(0); // Perfect!!!
+	Reg#(Bit#(64)) dramRdAddVel <- mkReg(16384);
 
 	Reg#(Bit#(16)) dramRdPosCnt_1 <- mkReg(0);
 	Reg#(Bit#(16)) dramRdPosCnt_2 <- mkReg(0);
@@ -164,38 +169,29 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 				serializer128bPos.put(payload);
 				
 				if ( dramRdPosCnt_1 == 256 ) begin
-					if ( dramRdPosCnt_2 + 1 == fromInteger(dramProcUnit) ) begin
-						dramRdAddPos <= 0;
-						dramRdPosCnt_2 <= 0;
+					dramRdAddPos <= 0;
+					dramRdPosCnt_2 <= 0;
 
-						dramReaderPos <= False;
-						dramReaderVel <= True;
-					end else begin
-						dramRdAddPos <= dramRdAddPos + (1024*4*4);
-						dramRdPosCnt_2 <= dramRdPosCnt_2 + 1;
-						stage2 <= False;
-					end
+					dramReaderPos <= False;
+					dramReaderVel <= True;
+					
 					dramRdPosCnt_1 <= 0;
+					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Read 1024 position and mass data \033[1;32mdone!\n", cycleCount);
 				end else begin
 					dramRdPosCnt_1 <= dramRdPosCnt_1 + 1;
 				end
 			end else begin
-				dramArbiter.access[0].users[0].cmd(dramRdAddPos, 256, False); // Read 1024 position value of particles
+				dramArbiter.access[0].users[0].cmd(dramRdAddPos, 256, False); // 1024*4*4 = 64*256
 				dramRdPosCnt_1 <= dramRdPosCnt_1 + 1;
 				stage3 <= True;
+				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Read 1024 position and mass data \033[1;32mstart!\n", cycleCount);
 			end
 		end else if ( dramReaderVel ) begin
 			if ( dramRdVelCnt_1 != 0 ) begin
 				let payload <- dramArbiter.access[0].users[1].read;
 				serializer128bVel.put(payload);
 				if ( dramRdVelCnt_1 == 192 ) begin
-					if ( dramRdVelCnt_2 + 1 == fromInteger(dramProcUnit) ) begin
-						dramRdAddVel <= 268435456;
-						dramRdVelCnt_2 <= 0;
-					end else begin
-						dramRdAddVel <= dramRdAddVel + (1024*3*4);
-						dramRdVelCnt_2 <= dramRdVelCnt_2 + 1;
-					end
+					dramRdAddVel <= 16384;
 					dramRdVelCnt_1 <= 0;
 
 					dramReaderPos <= True;
@@ -203,12 +199,14 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 
 					stage2 <= False;
 					stage6 <= True; // Shut DRAM Reader down & Open DRAM Writer up
+					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Read 1024 velocity data \033[1;32mdone!\n", cycleCount);
 				end else begin
 					dramRdVelCnt_1 <= dramRdVelCnt_1 + 1;
 				end
 			end else begin
-				dramArbiter.access[0].users[1].cmd(dramRdAddVel, 192, False); // Read 1024 velocity value of particles
+				dramArbiter.access[0].users[1].cmd(dramRdAddVel, 192, False); // 1024*3*4 = 64*192
 				dramRdVelCnt_1 <= dramRdVelCnt_1 + 1;
+				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Read 1024 velocity data \033[1;32mstart!\n", cycleCount);
 			end
 		end
 	endrule
@@ -222,13 +220,9 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	FIFO#(Vector#(3, Bit#(32))) originDataPos_iQ <- mkSizedBRAMFIFO(1024);
 	FIFO#(Vector#(4, Bit#(32))) originDataPos_jQ <- mkSizedBRAMFIFO(1024);
 	FIFO#(Bit#(32)) originDataMassQ <- mkSizedBRAMFIFO(1024);
-
-	Reg#(Bit#(16)) dramProcUnitIdx <- mkReg(0);
-	Reg#(Bit#(16)) idxCnt <- mkReg(0);
 	rule dataOrganizerPosIn( stage3 );
 		Vector#(4, Bit#(32)) pm = replicate(0);
 		Vector#(3, Bit#(32)) p = replicate(0);
-		Bit#(16) idx = dramProcUnitIdx;
 
 		let d <- serializer128bPos.get;
 
@@ -239,77 +233,48 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 
 		for ( Integer i = 0; i < 3; i = i + 1 ) p[i] = pm[i];
 
-		if ( idx != 0 ) begin
-			if ( idx + 1 == fromInteger(dramProcUnit) ) begin
-				if ( idxCnt + 1 == fromInteger(bramFifoSize) ) begin
-					dramProcUnitIdx <= 0;
-					idxCnt <= 0;
-					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage1\033[0m: Read and organize pos_j done(%d/16384)!\n", cycleCount, (idx+1));
-				end else begin
-					idxCnt <= idxCnt + 1;
-				end
-			end else begin
-				if ( idxCnt + 1 == fromInteger(bramFifoSize) ) begin
-					dramProcUnitIdx <= dramProcUnitIdx + 1;
-					idxCnt <= 0;
-					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage1\033[0m: Read and organize pos_j done(%d/16384)!\n", cycleCount, (idx+1));
-				end else begin
-					idxCnt <= idxCnt + 1;
-				end
-			end
-			originDataPos_jQ.enq(pm);
-		end else begin
-			if ( idxCnt + 1 == fromInteger(bramFifoSize) ) begin
-				idxCnt <= 0;
-				dramProcUnitIdx <= dramProcUnitIdx + 1;
-				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage1\033[0m: Read and organize pos_i done!\n", cycleCount);
-				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage1\033[0m: Read and organize pos_j done(%d/16384)!\n", cycleCount, (idx+1));
-			end else begin
-				idxCnt <= idxCnt + 1;
-			end
-			originDataPos_iQ.enq(p); // Operand i
-			originDataPos_jQ.enq(pm); // Operand j
-			originDataMassQ.enq(pm[3]); // Mass
+		originDataPos_iQ.enq(p); // Operand i
+		originDataPos_jQ.enq(pm); // Operand j
+		originDataMassQ.enq(pm[3]); // Mass
 
-			stage4 <= True;
-		end
+		stage4 <= True;
 	endrule
 
 	FIFO#(Vector#(3, Bit#(32))) originDataVelQ <- mkSizedBRAMFIFO(1024);
-	Reg#(Bit#(96)) toNbodyVelBuffer <- mkReg(0);
-	Reg#(Bit#(4)) toNbodyVelCnt <- mkReg(0);
+	Reg#(Bit#(96)) velInBuffer <- mkReg(0);
+	Reg#(Bit#(4)) velInCnt <- mkReg(0);
 	rule dataOrganizerVelIn( stage3 );
 		Vector#(3, Bit#(32)) v = replicate(0);
-		if ( toNbodyVelCnt == 0 ) begin
+		if ( velInCnt == 0 ) begin
 			let d <- serializer128bVel.get;
 			v[0] = d[31:0]; // Velocity X
 			v[1] = d[63:32]; // Velocity Y
 			v[2] = d[95:64]; //  Velocity Z
-			toNbodyVelBuffer <= zeroExtend(d[127:96]);	
-			toNbodyVelCnt <= toNbodyVelCnt + 1;			
-		end else if ( toNbodyVelCnt == 1 ) begin
+			velInBuffer <= zeroExtend(d[127:96]);	
+			velInCnt <= velInCnt + 1;			
+		end else if ( velInCnt == 1 ) begin
 			let d <- serializer128bVel.get;
-			Bit#(32) b = truncate(toNbodyVelBuffer);
+			Bit#(32) b = truncate(velInBuffer);
 			v[0] = b;
 			v[1] = d[31:0];
 			v[2] = d[63:32];
-			toNbodyVelBuffer <= zeroExtend(d[127:64]);
-			toNbodyVelCnt <= toNbodyVelCnt + 1;
-		end else if ( toNbodyVelCnt == 2 ) begin
+			velInBuffer <= zeroExtend(d[127:64]);
+			velInCnt <= velInCnt + 1;
+		end else if ( velInCnt == 2 ) begin
 			let d <- serializer128bVel.get;
-			Bit#(64) b = truncate(toNbodyVelBuffer);
+			Bit#(64) b = truncate(velInBuffer);
 			v[0] = b[31:0];
 			v[1] = b[63:32];
 			v[2] = d[31:0];
-			toNbodyVelBuffer <= d[127:32];
-			toNbodyVelCnt <= toNbodyVelCnt + 1;
-		end else if ( toNbodyVelCnt == 3 ) begin
-			let b = toNbodyVelBuffer;
+			velInBuffer <= d[127:32];
+			velInCnt <= velInCnt + 1;
+		end else if ( velInCnt == 3 ) begin
+			let b = velInBuffer;
 			v[0] = b[31:0];
 			v[1] = b[63:32];
 			v[2] = b[95:64];
-			toNbodyVelBuffer <= 0;
-			toNbodyVelCnt <= 0;
+			velInBuffer <= 0;
+			velInCnt <= 0;
 		end
 		originDataVelQ.enq(v);
 	endrule
@@ -329,136 +294,116 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	endrule
 
 	FIFO#(Vector#(3, Bit#(32))) updatedDataVelQ <- mkSizedBRAMFIFO(1024);
-	Reg#(Bit#(96)) fromNbodyVelBuffer <- mkReg(0);
-	Reg#(Bit#(4)) fromNbodyVelCnt <- mkReg(0);
+	Reg#(Bit#(96)) velOutBuffer <- mkReg(0);
+	Reg#(Bit#(4)) velOutCnt <- mkReg(0);
 	rule dataOrganizerVelOut( stage3 );
 		updatedDataVelQ.deq;
 		let v = updatedDataVelQ.first;
 		Bit#(96) d = (zeroExtend(v[2])) | (zeroExtend(v[1])) | (zeroExtend(v[0]));
 
-		if ( fromNbodyVelCnt == 0 ) begin
-			fromNbodyVelBuffer <= d;
-			fromNbodyVelCnt <= fromNbodyVelCnt + 1;
-		end else if ( fromNbodyVelCnt == 1 ) begin
-			Bit#(128) b = zeroExtend(fromNbodyVelBuffer);
+		if ( velOutCnt == 0 ) begin
+			velOutBuffer <= d;
+			velOutCnt <= velOutCnt + 1;
+		end else if ( velOutCnt == 1 ) begin
+			Bit#(128) b = zeroExtend(velOutBuffer);
 			Bit#(128) d_0 = zeroExtend(d[31:0]);
 			Bit#(128) p = (d_0 << 96) | (b);
 			deserializer128bVel.put(p);
-			fromNbodyVelBuffer <= (d >> 32);
-			fromNbodyVelCnt <= fromNbodyVelCnt + 1;
-		end else if ( fromNbodyVelCnt == 2 ) begin
-			Bit#(128) b = zeroExtend(fromNbodyVelBuffer);
+			velOutBuffer <= (d >> 32);
+			velOutCnt <= velOutCnt + 1;
+		end else if ( velOutCnt == 2 ) begin
+			Bit#(128) b = zeroExtend(velOutBuffer);
 			Bit#(128) d_01 = zeroExtend(d[63:0]);
 			Bit#(128) p = (d_01 << 64) | (b);
 			deserializer128bVel.put(p);
-			fromNbodyVelBuffer <= (d >> 64);
-			fromNbodyVelCnt <= fromNbodyVelCnt + 1;
-		end else if ( fromNbodyVelCnt == 3 ) begin
-			Bit#(128) b = zeroExtend(fromNbodyVelBuffer);
+			velOutBuffer <= (d >> 64);
+			velOutCnt <= velOutCnt + 1;
+		end else if ( velOutCnt == 3 ) begin
+			Bit#(128) b = zeroExtend(velOutBuffer);
 			Bit#(128) d_012 = zeroExtend(d);
 			Bit#(128) p = (d_012 << 32) | (b);
 			deserializer128bVel.put(p);
-			fromNbodyVelBuffer <= 0;
-			fromNbodyVelCnt <= 0;
+			velOutBuffer <= 0;
+			velOutCnt <= 0;
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------
 	// Stage 4 (N-body, Data Relayer)
 	//
-	// This stage relays the data to N-body app
+	// This stage relays the data to N-body app ***Important***
 	//--------------------------------------------------------------------------------------------
 	FIFO#(Vector#(3, Bit#(32))) originDataPosQ <- mkSizedBRAMFIFO(1024);
-	Reg#(Vector#(3, Bit#(32))) relayDataBufferPos_i <- mkReg(replicate(0));
-	Reg#(Bit#(16)) relayDataCntPos_i_1 <- mkReg(0);
-	Reg#(Bit#(16)) relayDataCntPos_i_2 <- mkReg(0);
+	Reg#(Vector#(3, Bit#(32))) relayDataPos_iBuffer <- mkReg(replicate(0));
+	Reg#(Bit#(16)) relayDataPos_iCnt_1 <- mkReg(0);
+	Reg#(Bit#(16)) relayDataPos_iCnt_2 <- mkReg(0);
 	rule dataRelayerPos_i( stage4 );
-		if ( relayDataCntPos_i_1 != 0 ) begin
-			let p_i = relayDataBufferPos_i;
+		if ( relayDataPos_iCnt_1 != 0 ) begin
+			let pos_i = relayDataPos_iBuffer;
 		
-			nbody.dataPIn_i(p_i);
+			nbody.dataPIn_i(pos_i);
 
-			if ( relayDataCntPos_i_1 + 1 == fromInteger(totalReplicate) ) begin
-				if ( relayDataCntPos_i_2 + 1 == fromInteger(bramFifoSize) ) begin
-					relayDataCntPos_i_2 <= 0;
-					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage4\033[0m: Relay 1024 operand i done!\n", cycleCount);
+			if ( relayDataPos_iCnt_1 + 1 == 64 ) begin
+				if ( relayDataPos_iCnt_2 + 1 == fromInteger(bramFifoSize) ) begin
+					relayDataPos_iCnt_2 <= 0;
+					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay 1024 pos_i \033[1;32mdone!\n", cycleCount);
 				end else begin
-					relayDataCntPos_i_2 <= relayDataCntPos_i_2 + 1;
-					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage4\033[0m: Relay %dth operand i done!\n", cycleCount, (relayDataCntPos_i_2+1));
+					relayDataPos_iCnt_2 <= relayDataPos_iCnt_2 + 1;
+					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay %dth pos_i \033[1;32mdone!\n", cycleCount, (relayDataPos_iCnt_2+1));
 				end
-				relayDataCntPos_i_1 <= 0;
+				relayDataPos_iCnt_1 <= 0;
 			end else begin
-				relayDataCntPos_i_1 <= relayDataCntPos_i_1 + 1;
+				relayDataPos_iCnt_1 <= relayDataPos_iCnt_1 + 1;
 			end
 		end else begin
 			originDataPos_iQ.deq;
-			let p_i = originDataPos_iQ.first;
+			let pos_i = originDataPos_iQ.first;
 			
-			nbody.dataPIn_i(p_i);
+			nbody.dataPIn_i(pos_i);
 			
-			relayDataBufferPos_i <= p_i;
-			relayDataCntPos_i_1 <= relayDataCntPos_i_1 + 1;
+			relayDataPos_iBuffer <= pos_i;
+			relayDataPos_iCnt_1 <= relayDataPos_iCnt_1 + 1;
 
-			originDataPosQ.enq(p_i); // Store position value for updating to BRAM
+			originDataPosQ.enq(pos_i); // Original position data should be stored to finally update position and velocity data
+			stage5 <= True;
 		end
 	endrule
-	Reg#(Bit#(16)) relayDataCntPos_j_1 <- mkReg(0);
-	Reg#(Bit#(16)) relayDataCntPos_j_2 <- mkReg(0);
-	Reg#(Bit#(16)) relayDataCntPos_j_3 <- mkReg(0);
-	rule dataRelayerPos_j( stage4 );
-		originDataPos_jQ.deq;
-		let p_j = originDataPos_jQ.first;
 
-		nbody.dataPmIn_j(p_j);
-
-		if ( relayDataCntPos_j_3 + 1 == fromInteger(dramProcUnit) ) begin
-			if ( relayDataCntPos_j_2 + 1 == fromInteger(totalReplicate) ) begin
-				if ( relayDataCntPos_j_1 != 0 ) begin
-					if ( relayDataCntPos_j_1 + 1 == fromInteger(bramFifoSize) ) begin
-						relayDataCntPos_j_1 <= 0;
-						relayDataCntPos_j_2 <= 0;
-						relayDataCntPos_j_3 <= 0;
-						$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage4\033[0m: Relay Pos_j done(%d)!\n", cycleCount, relayDataCntPos_j_3+1);
-					end else begin
-						relayDataCntPos_j_1 <= relayDataCntPos_j_1 + 1;
-					end
+	Reg#(Bit#(32)) relayDataPos_jCnt_1 <- mkReg(0);
+	Reg#(Bit#(32)) relayDataPos_jCnt_2 <- mkReg(0);
+	rule dataRelayerPos_j_1( stage4 );
+		if ( bramWriteDone ) begin
+			if ( relayDataPos_jCnt_1 + 1 == fromInteger(bramFifoSize) ) begin
+				if ( relayDataPos_jCnt_2 + 2 == fromInteger(totalReplicate) ) begin
+					relayDataPos_jCnt_2 <= 0;
+					bramWriteDone <= False;
 				end else begin
-					relayDataCntPos_j_1 <= relayDataCntPos_j_1 + 1;
-					stage2 <= True;
+					relayDataPos_jCnt_2 <= relayDataPos_jCnt_2 + 1;
 				end
+				relayDataPos_jCnt_1 <= 0;
+				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay %dth 1024 pos_j \033[1;32mdone!\n", cycleCount, (relayDataPos_jCnt_2+2));
 			end else begin
-				if ( relayDataCntPos_j_1 + 1 == fromInteger(bramFifoSize) ) begin
-					relayDataCntPos_j_1 <= 0;
-					relayDataCntPos_j_2 <= relayDataCntPos_j_2 + 1;
-				end else begin
-					relayDataCntPos_j_1 <= relayDataCntPos_j_1 + 1;
-				end
-				originDataPos_jQ.enq(p_j); // Replicate operand j
+				relayDataPos_jCnt_1 <= relayDataPos_jCnt_1 + 1;
 			end
+			bram.portA.request.put(BRAMRequest{write:False, responseOnWrite:?, address:relayDataPos_jCnt_1*128, datain:?});
 		end else begin
-			if ( relayDataCntPos_j_2 + 1 == fromInteger(totalReplicate) ) begin
-				if ( relayDataCntPos_j_1 != 0 ) begin
-					if ( relayDataCntPos_j_1 + 1 == fromInteger(bramFifoSize) ) begin
-						relayDataCntPos_j_1 <= 0;
-						relayDataCntPos_j_2 <= 0;
-						relayDataCntPos_j_3 <= relayDataCntPos_j_3 + 1;
-						$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage4\033[0m: Relay Pos_j done(%d)!\n", cycleCount, relayDataCntPos_j_3+1);
-					end else begin
-						relayDataCntPos_j_1 <= relayDataCntPos_j_1 + 1;
-					end
-				end else begin
-					relayDataCntPos_j_1 <= relayDataCntPos_j_1 + 1;
-					stage2 <= True;
-				end
+			originDataPos_jQ.deq;
+			let pos_j = originDataPos_jQ.first;
+
+			nbody.dataPIn_j(pos_j);
+		
+			if ( relayDataPos_jCnt_1 + 1 == fromInteger(bramFifoSize) ) begin
+				relayDataPos_jCnt_1 <= 0;
+				bramWriteDone <= True;
+				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay 1th 1024 operand j \033[1;32mdone!\n", cycleCount);
 			end else begin
-				if ( relayDataCntPos_j_1 + 1 == fromInteger(bramFifoSize) ) begin
-					relayDataCntPos_j_1 <= 0;
-					relayDataCntPos_j_2 <= relayDataCntPos_j_2 + 1;
-				end else begin
-					relayDataCntPos_j_1 <= relayDataCntPos_j_1 + 1;
-				end
-				originDataPos_jQ.enq(p_j); // Replicate operand j
+				relayDataPos_jCnt_1 <= relayDataPos_jCnt_1 + 1;
 			end
+			bram.portA.request.put(BRAMRequest{write:True, responseOnWrite:False, address:relayDataPos_jCnt_1*128, datain:pos_j});
 		end
+	endrule
+	rule dataRelayerPos_j_2( stage4 );
+		let v <- bram.portA.response.get();
+		nbody.dataPIn_j(v);
 	endrule
 
 	Reg#(Bit#(16)) relayDataPVCnt <- mkReg(0);
@@ -473,10 +418,9 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 			
 		if ( relayDataPVCnt + 1 == fromInteger(bramFifoSize) ) begin
 			relayDataPVCnt <= 0;
-			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage4\033[0m: Relay 1024 velocity data done!\n", cycleCount);
+			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay 1024 velocity data \033[1;32mdone!\n", cycleCount);
 		end else begin
 			relayDataPVCnt <= relayDataPVCnt + 1;
-			stage5 <= True;
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------
@@ -496,6 +440,7 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 					
 					dataReceiverPos <= False;
 					dataReceiverVel <= True;
+					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Receive 1024 updated position data \033[1;32m done!\n", cycleCount);
 				end else begin
 					recvDataPCnt <= recvDataPCnt + 1;
 				end
@@ -511,6 +456,7 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 					
 					dataReceiverPos <= True;
 					dataReceiverVel <= False;
+					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Receive 1024 updated velocity data \033[1;32mdone!\n", cycleCount);
 				end else begin
 					recvDataVCnt <= recvDataVCnt + 1;
 				end
@@ -524,8 +470,8 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	//
 	// This stage writes the updated data to DRAM
 	//--------------------------------------------------------------------------------------------
-	Reg#(Bit#(64)) dramWrRsltAddPos <- mkReg(469762048);
-	Reg#(Bit#(64)) dramWrRsltAddVel <- mkReg(738197504);
+	Reg#(Bit#(64)) dramWrRsltAddPos <- mkReg(28672);
+	Reg#(Bit#(64)) dramWrRsltAddVel <- mkReg(45056);
 	Reg#(Bit#(16)) dramWrRsltCntPos <- mkReg(0);
 	Reg#(Bit#(16)) dramWrRsltCntVel <- mkReg(0);	
 	rule dramWriterRslt( stage6 );
@@ -534,17 +480,13 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 				let payload <- deserializer128bPos.get;
 				dramArbiter.access[0].users[0].write(payload);
 				if ( dramWrRsltCntPos == 256 ) begin
-					if ( (dramWrRsltAddPos + (1024*4*4)) == 738197504 ) begin
-						dramWrRsltAddPos <= 469762048;
-					end else begin
-						dramWrRsltAddPos <= dramWrRsltAddPos + (1024*4*4);
-					end
+					dramWrRsltAddPos <= 28672;
 					dramWrRsltCntPos <= 0;
 					
 					dramWriterPos <= False;
 					dramWriterVel <= True;
 					
-					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage6\033[0m: Writing 1024 updated position data done!\n", cycleCount);
+					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Writing 1024 updated position data \033[1;32mdone!\n", cycleCount);
 				end else begin
 					dramWrRsltCntPos <= dramWrRsltCntPos + 1;
 				end
@@ -557,26 +499,21 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 				let payload <- deserializer128bVel.get;
 				dramArbiter.access[0].users[1].write(payload);
 				if ( dramWrRsltCntVel == 192 ) begin
-					if ( (dramWrRsltAddVel + (1024*3*4)) == 939524096 ) begin
-						dramWrRsltAddVel <= 738197504;
+					dramWrRsltAddVel <= 45056;
 						
-						// Initializing
-						stage3 <= False;
-						stage4 <= False;
-						stage5 <= False;
-					end else begin
-						dramWrRsltAddVel <= dramWrRsltAddVel + (1024*3*4);	
-						stage2 <= True;			
-					end
+					stage3 <= False;
+					stage4 <= False;
+					stage5 <= False;
+					stage6 <= False;
+
 					dramWrRsltCntVel <= 0;
 					
 					dramWriterPos <= True;
 					dramWriterVel <= False;
 					
-					stage6 <= False;
-		
 					statusCheckerQ.enq(1); // Write 1024 updated particel values done
-					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[1;33mStage6\033[0m: Writing 1024 updated velocity data done!\n", cycleCount);
+					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Writing 1024 updated velocity data \033[1;32mdone!\n", cycleCount);
+					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: System \033[1;32mfinished!\n", cycleCount);
 				end else begin
 					dramWrRsltCntVel <= dramWrRsltCntVel + 1;
 				end
@@ -594,14 +531,14 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 		pcieReadReqQ.deq;
 		let r = pcieReadReqQ.first;
 		Bit#(4) a = truncate(r.addr>>2);
-		if ( a < 2 ) begin
+		if ( a == 0 ) begin
 			if ( statusCheckerQ.notEmpty ) begin
 				pcieRespQ.enq(tuple2(r, statusCheckerQ.first));
 				statusCheckerQ.deq;
 			end else begin 
 				pcieRespQ.enq(tuple2(r, 32'hffffffff));
 			end
-		end else begin
+		end else if ( a == 1 ) begin
 			if ( cycleQ.notEmpty ) begin
 				pcieRespQ.enq(tuple2(r, cycleQ.first));
 				cycleQ.deq;

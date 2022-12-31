@@ -8,10 +8,13 @@ import BRAMFIFO::*;
 import FloatingPoint::*;
 import Float32::*;
 
+typedef 1024 TotalParticles;
+typedef 1024 UnitParticles;
 typedef 4 PeWaysLog;
 typedef TExp#(PeWaysLog) PeWays;
+typedef TDiv#(UnitParticles, PeWays) Accumulate;
 
-Integer totalParticles = 16*1024*1024;
+Integer totalParticles = 1024;
 
 
 interface CalAccelPeIfc;
@@ -42,7 +45,7 @@ module mkCalAccelPe#(Bit#(PeWaysLog) peIdx) (CalAccelPeIfc);
 		massJQ.enq(j[3]);
 	endrule
 	FIFO#(Vector#(3, Bit#(32))) tmpResult1Q <- mkFIFO;
-	FIFO#(Vector#(3, Bit#(32))) subResultQ <- mkFIFO;
+	FIFO#(Vector#(3, Bit#(32))) subResultQ <- mkSizedBRAMFIFO(64);
 	rule commonSub2;
 		Vector#(3, Bit#(32)) out1 = replicate(0);
 		Vector#(3, Bit#(32)) out2 = replicate(0);
@@ -131,7 +134,7 @@ module mkCalAccelPe#(Bit#(PeWaysLog) peIdx) (CalAccelPeIfc);
 
 		for ( Integer x = 0; x < 3; x = x + 1 ) fpMult32[x+6].enq(d, s[x]);
 	endrule
-	FIFO#(Vector#(3, Bit#(32))) frQ <- mkFIFO;
+	FIFO#(Vector#(3, Bit#(32))) frQ <- mkSizedBRAMFIFO(64);
 	rule calAccelResult2;
 		Vector#(3, Bit#(32)) fr = replicate(0);
 		for ( Integer x = 0; x < 3; x = x + 1 ) begin
@@ -144,12 +147,13 @@ module mkCalAccelPe#(Bit#(PeWaysLog) peIdx) (CalAccelPeIfc);
 
 	FIFOF#(Vector#(3, Bit#(32))) frBufferQ <- mkFIFOF;
 	Reg#(Bit#(8)) accCnt_1 <- mkReg(0);
-	rule calAccumulator1;
-		frQ.deq;
-		let currFr = frQ.first;
+	rule accumulator1;
 		if ( accCnt_1 != 0 ) begin
 			if ( frBufferQ.notEmpty ) begin
-				if ( accCnt_1 == 63 ) begin
+				frQ.deq;
+				let currFr = frQ.first;
+
+				if ( accCnt_1 == (fromInteger(valueOf(Accumulate)) - 1) ) begin
 					accCnt_1 <= 0;
 				end else begin
 					accCnt_1 <= accCnt_1 + 1;
@@ -157,23 +161,28 @@ module mkCalAccelPe#(Bit#(PeWaysLog) peIdx) (CalAccelPeIfc);
 				
 				frBufferQ.deq;
 				let prevFr = frBufferQ.first;
-				for ( Integer x = 0; x < 3; x = x + 1 ) fpAdd32[x].enq(prevFr[x], currFr[x]);
+				for ( Integer x = 0; x < 3; x = x + 1 ) begin
+					fpAdd32[x].enq(prevFr[x], currFr[x]);
+				end
 			end
 		end else begin
+			frQ.deq;
+			let currFr = frQ.first;
+
 			accCnt_1 <= accCnt_1 + 1;
 			frBufferQ.enq(currFr);
 		end
 	endrule
-	FIFOF#(Vector#(3, Bit#(32))) outputAQ <- mkFIFOF;
+	FIFOF#(Vector#(3, Bit#(32))) outputAQ <- mkSizedFIFOF(64);
 	Reg#(Bit#(8)) accCnt_2 <- mkReg(0);
-	rule calAccumulator2;
+	rule accumulator2;
 		Vector#(3, Bit#(32)) acc = replicate(0);
 		for ( Integer x = 0; x < 3; x = x + 1 ) begin
 			fpAdd32[x].deq;
 			acc[x] = fpAdd32[x].first;
 		end
 
-		if ( accCnt_2 == 62 ) begin
+		if ( accCnt_2 == (fromInteger(valueOf(Accumulate)) - 2) ) begin
 			outputAQ.enq(acc);
 			accCnt_2 <= 0;
 		end else begin
@@ -209,7 +218,7 @@ module mkCalAccel(CalAccelIfc);
 	Vector#(PeWays, CalAccelPeIfc) pes;
 	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) iInQs <- replicateM(mkFIFO);
 	Vector#(PeWays, FIFO#(Vector#(4, Bit#(32)))) jInQs <- replicateM(mkFIFO);
-	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) aOutQs <- replicateM(mkFIFO);
+	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) aOutQs <- replicateM(mkSizedBRAMFIFO(64));
 
 	for ( Integer x = 0; x < valueOf(PeWays); x = x + 1 ) begin
 		pes[x] <- mkCalAccelPe(fromInteger(x));
@@ -229,6 +238,8 @@ module mkCalAccel(CalAccelIfc);
 			if ( x < (valueOf(PeWays) - 1) ) begin
 				jInQs[x+1].enq(d);
 			end
+
+			jInIdx <= jInIdx + 1;
 			Bit#(PeWaysLog) target_j = truncate(jInIdx);
 			if ( target_j == fromInteger(x) ) begin
 				pes[x].putOperandJ(d);
@@ -245,48 +256,6 @@ module mkCalAccel(CalAccelIfc);
 		endrule
 	end
 
-	FIFOF#(Vector#(3, Bit#(32))) accBufferQ <- mkFIFOF;
-	Reg#(Bit#(8)) accCnt_1 <- mkReg(0);
-	rule accumulator1;
-		aOutQs[0].deq;
-		let currD = aOutQs[0].first;
-
-		if ( accCnt_1 != 0 ) begin
-			if ( accBufferQ.notEmpty ) begin
-				if ( accCnt_1 == 15 ) begin
-					accCnt_1 <= 0;
-				end else begin
-					accCnt_1 <= accCnt_1 + 1;
-				end
-			
-				accBufferQ.deq;
-				let prevD = accBufferQ.first;
-				for ( Integer x = 0; x < 3; x = x + 1 ) fpAdd32[x].enq(prevD[x], currD[x]);
-			end
-		end else begin
-			accBufferQ.enq(currD);
-			accCnt_1 <= accCnt_1 + 1;
-		end
-	endrule
-	FIFO#(Vector#(3, Bit#(32))) aOutQ <- mkFIFO;
-	Reg#(Bit#(8)) accCnt_2 <- mkReg(0);
-	rule accumulator2;
-		Vector#(3, Bit#(32)) acc = replicate(0);
-		for ( Integer x = 0; x < 3; x = x + 1 ) begin
-			fpAdd32[x].deq;
-			acc[x] = fpAdd32[x].first;
-		end
-
-		if ( accCnt_2 == 14 ) begin
-			aOutQ.enq(acc);
-			accCnt_2 <= 0;
-		end else begin
-			accBufferQ.enq(acc);
-			accCnt_2 <= accCnt_2 + 1;
-		end
-	
-	endrule
-
 	method Action iIn(Vector#(3, Bit#(32)) dataI);
 		iInQs[0].enq(dataI);
 	endmethod
@@ -294,7 +263,7 @@ module mkCalAccel(CalAccelIfc);
 		jInQs[0].enq(dataJ);
 	endmethod
 	method ActionValue#(Vector#(3, Bit#(32))) aOut;
-		aOutQ.deq;
-		return aOutQ.first;
+		aOutQs[0].deq;
+		return aOutQs[0].first;
 	endmethod
 endmodule

@@ -8,10 +8,10 @@ import BRAMFIFO::*;
 import FloatingPoint::*;
 import Float32::*;
 
-typedef 3 PeWaysLog;
+typedef 5 PeWaysLog;
 typedef TExp#(PeWaysLog) PeWays;
 
-Integer totalParticles = 16*1024*1024;
+Integer totalParticles = 1024;
 
 
 interface CalPositPeIfc;
@@ -107,6 +107,8 @@ module mkCalPosit(CalPositIfc);
 			if ( i < (valueOf(PeWays) - 1) ) begin
 				aInQs[i+1].enq(d);
 			end
+
+			aInIdx <= aInIdx + 1;
 			Bit#(PeWaysLog) target_a = truncate(aInIdx);
 			if ( target_a == fromInteger(i) ) begin
 				pes[i].putA(d);
@@ -119,6 +121,8 @@ module mkCalPosit(CalPositIfc);
 			if ( i < (valueOf(PeWays) - 1) ) begin
 				pInQs[i+1].enq(d);
 			end
+
+			pInIdx <= pInIdx + 1;
 			Bit#(PeWaysLog) target_p = truncate(pInIdx);
 			if ( target_p == fromInteger(i) ) begin
 				pes[i].putP(d);
@@ -131,6 +135,8 @@ module mkCalPosit(CalPositIfc);
 			if ( i < (valueOf(PeWays) - 1) ) begin
 				vInQs[i+1].enq(d);
 			end
+
+			vInIdx <= vInIdx + 1;
 			Bit#(PeWaysLog) target_v = truncate(vInIdx);
 			if ( target_v == fromInteger(i) ) begin
 				pes[i].putV(d);
