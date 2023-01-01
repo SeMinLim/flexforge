@@ -95,8 +95,6 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	Reg#(Bool) bramWriteDone <- mkReg(False);
 	// Data Receiver
 	Reg#(Bool) stage5 <- mkReg(False);
-	Reg#(Bool) dataReceiverPos <- mkReg(True);
-	Reg#(Bool) dataReceiverVel <- mkReg(False);
 	// DRAM Writer
 	Reg#(Bool) stage6 <- mkReg(False);
 	Reg#(Bool) dramWriterPos <- mkReg(True);
@@ -111,9 +109,9 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	
 		if ( off == 0 ) begin
 			stage1 <= True;
+			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Initial setting start!\n", cycleCount);
 		end else if ( off == 1 ) begin
 			deserializer32b.put(d);
-			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Initial setting start!\n", cycleCount);
 		end else if ( off == 2 ) begin 
 			stage2 <= True;	
 			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: System start!\n", cycleCount);
@@ -342,8 +340,8 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 		
 			nbody.dataPIn_i(pos_i);
 
-			if ( relayDataPos_iCnt_1 + 1 == 64 ) begin
-				if ( relayDataPos_iCnt_2 + 1 == fromInteger(bramFifoSize) ) begin
+			if ( relayDataPos_iCnt_1 + 1  == 64 ) begin
+				if ( relayDataPos_iCnt_2  == fromInteger(bramFifoSize) ) begin
 					relayDataPos_iCnt_2 <= 0;
 					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay 1024 pos_i \033[1;32mdone!\n", cycleCount);
 				end else begin
@@ -406,21 +404,32 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 		nbody.dataPIn_j(v);
 	endrule
 
-	Reg#(Bit#(16)) relayDataPVCnt <- mkReg(0);
+	Reg#(Bit#(16)) relayDataPosCnt <- mkReg(0);
 	rule dataRelayerPV( stage4 );
 		originDataPosQ.deq;
-		originDataVelQ.deq;
 		let p = originDataPosQ.first;
-		let v = originDataVelQ.first;
 
 		nbody.dataPIn(p);
-		nbody.dataVIn(v);
-			
-		if ( relayDataPVCnt + 1 == fromInteger(bramFifoSize) ) begin
-			relayDataPVCnt <= 0;
+		
+		if ( relayDataPosCnt + 1 == fromInteger(bramFifoSize) ) begin
+			relayDataPosCnt <= 0;
 			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay 1024 velocity data \033[1;32mdone!\n", cycleCount);
 		end else begin
-			relayDataPVCnt <= relayDataPVCnt + 1;
+			relayDataPosCnt <= relayDataPosCnt + 1;
+		end
+	endrule
+	Reg#(Bit#(16)) relayDataVelCnt <- mkReg(0);
+	rule dataRelayerVel( stage4 );
+		originDataVelQ.deq;
+		let v = originDataVelQ.first;
+
+		nbody.dataVIn(v);
+
+		if ( relayDataVelCnt + 1 == fromInteger(bramFifoSize) ) begin
+			relayDataVelCnt <= 0;
+			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay 1024 psotion data \033[1;32mdone!\n", cycleCount);
+		end else begin
+			relayDataVelCnt <= relayDataVelCnt + 1;
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------
@@ -430,39 +439,34 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	//--------------------------------------------------------------------------------------------
 	Reg#(Bit#(16)) recvDataPCnt <- mkReg(0);
 	Reg#(Bit#(16)) recvDataVCnt <- mkReg(0);
-	rule dataReceiver( stage5 );
-		if ( dataReceiverPos ) begin
-			let d <- nbody.dataOutP;
-			updatedDataPosQ.enq(d);
-			if ( recvDataPCnt != 0 ) begin
-				if ( recvDataPCnt + 1 == fromInteger(bramFifoSize) ) begin
-					recvDataPCnt <= 0;
+	rule dataReceiverPos( stage5 );
+		let d <- nbody.dataOutP;
+		updatedDataPosQ.enq(d);
+		if ( recvDataPCnt != 0 ) begin
+			if ( recvDataPCnt + 1 == fromInteger(bramFifoSize) ) begin
+				recvDataPCnt <= 0;
 					
-					dataReceiverPos <= False;
-					dataReceiverVel <= True;
-					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Receive 1024 updated position data \033[1;32m done!\n", cycleCount);
-				end else begin
-					recvDataPCnt <= recvDataPCnt + 1;
-				end
+				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Receive 1024 updated position data \033[1;32m done!\n", cycleCount);
 			end else begin
 				recvDataPCnt <= recvDataPCnt + 1;
 			end
-		end else if ( dataReceiverVel ) begin
-			let d <- nbody.dataOutV;
-			updatedDataVelQ.enq(d);
-			if ( recvDataVCnt != 0 ) begin
-				if ( recvDataVCnt + 1 == fromInteger(bramFifoSize) ) begin
-					recvDataVCnt <= 0;
+		end else begin
+			recvDataPCnt <= recvDataPCnt + 1;
+		end
+	endrule
+	rule dataReceiverVel( stage5 );
+		let d <- nbody.dataOutV;
+		updatedDataVelQ.enq(d);
+		if ( recvDataVCnt != 0 ) begin
+			if ( recvDataVCnt + 1 == fromInteger(bramFifoSize) ) begin
+				recvDataVCnt <= 0;
 					
-					dataReceiverPos <= True;
-					dataReceiverVel <= False;
-					$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Receive 1024 updated velocity data \033[1;32mdone!\n", cycleCount);
-				end else begin
-					recvDataVCnt <= recvDataVCnt + 1;
-				end
+				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Receive 1024 updated velocity data \033[1;32mdone!\n", cycleCount);
 			end else begin
 				recvDataVCnt <= recvDataVCnt + 1;
 			end
+		end else begin
+			recvDataVCnt <= recvDataVCnt + 1;
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------

@@ -14,6 +14,8 @@ interface CalVelocIfc;
 	method Action vIn(Vector#(3, Bit#(32)) v);
 	method ActionValue#(Vector#(3, Bit#(32))) vOut;
 endinterface
+
+(* synthesize *)
 module mkCalVeloc(CalVelocIfc);
 	Vector#(3, FpPairIfc#(32)) fpAdd32 <- replicateM(mkFpAdd32);
 

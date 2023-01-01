@@ -273,7 +273,7 @@ int main(int argc, char** argv) {
 	sleep(60);
 	statusCheck = 0;
 	status = 0;
-	for ( int i = 0; i < 3; i ++ ) {
+	for ( int i = 0; i < 10; i ++ ) {
 		status = pcie->userReadWord(statusCheck*4);
 		if ( status == 1 ) {
 			printf( "Computing N-body app & writing the 1024 updated data to memory done!\n" );

@@ -8,7 +8,7 @@ import BRAMFIFO::*;
 import FloatingPoint::*;
 import Float32::*;
 
-typedef 5 PeWaysLog;
+typedef 4 PeWaysLog;
 typedef TExp#(PeWaysLog) PeWays;
 
 Integer totalParticles = 1024;
@@ -90,6 +90,8 @@ interface CalPositIfc;
 	method Action pIn(Vector#(3, Bit#(32)) p);
 	method ActionValue#(Vector#(3, Bit#(32))) pOut;
 endinterface
+
+(* synthesize *)
 module mkCalPosit(CalPositIfc);
 	Vector#(PeWays, CalPositPeIfc) pes;
 	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) aInQs <- replicateM(mkFIFO);

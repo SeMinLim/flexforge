@@ -185,6 +185,7 @@ module mkCalAccelPe#(Bit#(PeWaysLog) peIdx) (CalAccelPeIfc);
 		if ( accCnt_2 == (fromInteger(valueOf(Accumulate)) - 2) ) begin
 			outputAQ.enq(acc);
 			accCnt_2 <= 0;
+			//$write("acc result done!\n");
 		end else begin
 			frBufferQ.enq(acc);
 			accCnt_2 <= accCnt_2 + 1;
@@ -212,6 +213,8 @@ interface CalAccelIfc;
 	method Action jIn(Vector#(4, Bit#(32)) dataJ);
 	method ActionValue#(Vector#(3, Bit#(32))) aOut;
 endinterface
+
+(* synthesize *)
 module mkCalAccel(CalAccelIfc);
 	Vector#(3, FpPairIfc#(32)) fpAdd32 <- replicateM(mkFpAdd32);
 
@@ -219,7 +222,7 @@ module mkCalAccel(CalAccelIfc);
 	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) iInQs <- replicateM(mkFIFO);
 	Vector#(PeWays, FIFO#(Vector#(4, Bit#(32)))) jInQs <- replicateM(mkFIFO);
 	Vector#(PeWays, FIFO#(Vector#(3, Bit#(32)))) aOutQs <- replicateM(mkSizedBRAMFIFO(64));
-
+	
 	for ( Integer x = 0; x < valueOf(PeWays); x = x + 1 ) begin
 		pes[x] <- mkCalAccelPe(fromInteger(x));
 
@@ -245,14 +248,15 @@ module mkCalAccel(CalAccelIfc);
 				pes[x].putOperandJ(d);
 			end
 		endrule
-		rule forwardResultA;
-			if ( pes[x].resultExist ) begin
-				let d <- pes[x].resultGet;
-				aOutQs[x].enq(d);
-			end else if ( x < (valueOf(PeWays)-1) ) begin
+		rule forwardResultA_1;
+			let d <- pes[x].resultGet;
+			aOutQs[x].enq(d);
+		endrule
+		rule forwardResultA_2;
+			if ( x < valueOf(PeWays) - 1 ) begin
 				aOutQs[x+1].deq;
 				aOutQs[x].enq(aOutQs[x+1].first);
-			end
+			end 
 		endrule
 	end
 
