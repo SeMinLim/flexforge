@@ -13,21 +13,24 @@ typedef TExp#(PeWaysLog) PeWays;
 
 
 interface MinDetectorIfc;
-	method Action vIn(Bit#(32) v);
-	method ActionValue#(Bit#(32)) minOut;
+	method Action vIn(Tuple3#(Vector#(3, Bit#(32)), Bit#(32), Bit#(PeWaysLog)) v);
+	method ActionValue#(Tuple2#(Vector#(3, Bit#(32)), Bit#(PeWaysLog))) minOut;
 endinterface
 (* synthesize *)
 module mkMinDetector(MinDetectorIfc);
-	FIFO#(Bit#(32)) vInQ <- mkFIFO;
-	FIFO#(Bit#(32)) minOutQ <- mkFIFO;
-
+	FIFO#(Tuple3#(Vector#(3, Bit#(32)), Bit#(32), Bit#(PeWaysLog)) vInQ <- mkFIFO;
+	FIFO#(Tuple2#(Vector#(3, Bit#(32)), Bit#(peWaysLog))) minOutQ <- mkFIFO;
+	
+	Reg#(Tuple3#(Vector#(3, Bit#(32)), Bit#(32), Bit#(PeWaysLog))) minOutBuffer <- mkReg(0);
 	Reg#(Bit#(8)) detectorCnt <- mkReg(0);
 	rule getMinValue;
 		vInQ.deq;
-		let v = vInQ.first;
+		let value = vInQ.first;
+		let v = tpl_2(value);
 
 		if ( detectorCnt != 0 ) begin
-			let m = minBuffer;
+			let minim = minOutBuffer;
+			let m = tpl_2(minim);	
 
 			Bool msign = m[31] == 1;
 			Bool vsign = v[31] == 1;
@@ -40,26 +43,26 @@ module mkMinDetector(MinDetectorIfc);
 
 			if ( detectorCnt + 1 == fromInteger(valueOf(PeWays)) ) begin
 				if ( fv < fm ) begin
-					minOutQ.enq(v);
+					minOutQ.enq(tuple2(tpl_1(value), tpl_3(value)));
 				end else begin
-					minOutQ.enq(m);
+					minOutQ.enq(tuple2(tpl_1(minim), tpl_3(minim)));
 				end
 				detectorCnt <= 0;
 			end else begin
 				if ( fv < fm ) begin
-					minBuffer <= v;
+					minOutBuffer <= value;
 				end
 				detectorCnt <= detectorCnt + 1;
 			end
 		end else begin
-			minBuffer <= v;
+			minOutBuffer <= value;
 			detectorCnt <= detectorCnt + 1;
 		end
 	endrule
-	method Action vIn(Bit#(32) v);
+	method Action vIn(Tuple3#(Vector#(3, Bit#(32)), Bit#(32), Bit#(PeWaysLog)) v);
 		vInQ.enq(v);
 	endmethod
-	method ActionValue#(Bit#(32)) minOut;
+	method ActionValue#(Tuple2#(Vector#(3, Bit#(32)), Bit#(PeWaysLog))) minOut;
 		minOutQ.deq;
 		return minOutQ.first;
 	endmethod

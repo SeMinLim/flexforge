@@ -298,8 +298,8 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 			dramArbiter.access[0].users[0].write(payload);
 			if ( dramWrRsltCnt == 192 ) begin
 				flagQ.deq;
-				let f = flagQ.first;
-				if ( f == 1 ) begin
+				let flag = flagQ.first;
+				if ( flag == 1 ) begin
 					stage3 <= False;
 					stage4 <= False;
 					stage5 <= False;
@@ -319,3 +319,29 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 			dramWrRsltCnt <= dramWrRsltCnt + 1;
 		end
 	endrule
+	//-------------------------------------------------------------------------------------------------
+	// Stage 7 (Status Check)
+	//
+	// This stage checks the status of the system and relays it to the host
+	//-------------------------------------------------------------------------------------------------
+	rule getStatus;
+		pcieReadReqQ.deq;
+		let r = pcieReadReqQ.first;
+		Bit#(4) a = truncate(r.addr>>2);
+		if ( a == 0 ) begin
+			if ( statusCheckerQ.notEmpty ) begin
+				pcieRespQ.enq(tuple2(r, statusCheckerQ.first));
+				statusCheckerQ.deq;
+			end else begin
+				pcieRespQ.enq(tuple2(r, 32'hffffffff));
+			end
+		end else if ( a == 1 ) begin
+			if ( cycleQ.notEmpty ) begin
+				pcieRespQ.enq(tuple2(r, cycleQ.first));
+				cycleQ.deq;
+			end else begin
+				pcieRespQ.enq(tuple2(r, 32'hffffffff));
+			end
+		end
+	endrule
+endmodule
