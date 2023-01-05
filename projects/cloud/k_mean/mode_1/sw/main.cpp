@@ -87,16 +87,6 @@ int main(int argc, char** argv) {
 	for ( int k = 0; k < NumData; k ++ ) {
 		dataPosYv[k] = *(uint32_t*)&dataPosY[k];
 	}
-	// Cluster Head Index	
-	float* dataIdx = (float*)malloc(sizeof(float)*NumData);
-	float idx = 0.00;
-	for ( int i = 0; i < NumData; i ++ ) {
-		dataIdx[i] = idx;
-	}
-	uint32_t* dataIdxv = (uint32_t*)malloc(sizeof(uint32_t)*NumData);
-	for ( int k = 0; k < NumData; k ++ ) {
-		dataIdxv[k] = *(uint32_t*)&dataIdx[k];
-	}
 	//------------------------------------------------------------------------------------
 	// Send the data through PCIe first & Check all data are stored well
 	//------------------------------------------------------------------------------------
@@ -106,14 +96,11 @@ int main(int argc, char** argv) {
 	fflush( stdout );
 
 	int stage_1 = 1;
-	printf( "Started to send 2-dimensional position data and initial cluster head index!\n" );
+	printf( "Started to send 2-dimensional position data!\n" );
 	fflush( stdout );
-	for ( int i = 0; i < NumData/PEs; i ++ ) {
-		for ( int j = 0; j < PEs; j ++ ) {
-			pcie->userWriteWord(stage_1*4, dataPosXv[(i*PEs) + j]); // Pos X
-			pcie->userWriteWord(stage_1*4, dataPosYv[(i*PEs) + j]); // Pos Y
-			pcie->userWriteWord(stage_1*4, dataIdxv[(i*PEs) + j]); // Cluster head idx
-		}
+	for ( int i = 0; i < NumData; i ++ ) {
+		pcie->userWriteWord(stage_1*4, dataPosXv[i]); // Pos X
+		pcie->userWriteWord(stage_1*4, dataPosYv[i]); // Pos Y
 	}
 	printf( "Sending the data done!\n" );
 	fflush( stdout );

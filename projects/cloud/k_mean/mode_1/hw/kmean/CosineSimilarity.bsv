@@ -15,9 +15,9 @@ interface CosineSimilarityIfc;
 	method ActionValue#(Bit#(32)) csOut;
 endinterface
 (* synthesize *)
-module mkCosineSimilarity;
-	Vector#(2, FIFO#(Vector#(2, Bit#(32)))) aInQs <- mkFIFO;
-	Vector#(2, FIFO#(Vector#(2, Bit#(32)))) bInQs <- mkFIFO;
+module mkCosineSimilarity(CosineSimilarityIfc);
+	Vector#(2, FIFO#(Vector#(2, Bit#(32)))) aInQs <- replicateM(mkFIFO);
+	Vector#(2, FIFO#(Vector#(2, Bit#(32)))) bInQs <- replicateM(mkFIFO);
 	FIFO#(Bit#(32)) csOutQ <- mkFIFO;
 	
 	// Get a's size
