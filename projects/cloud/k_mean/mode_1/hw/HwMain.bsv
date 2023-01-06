@@ -15,13 +15,12 @@ import DRAMArbiterRemote::*;
 
 import Kmean::*;
 
-Integer numData = 1024;
-Integer totalByte = 2*1024*4;
-Integer totalWords = 2*64;
-Integer bramFifoSize = 1024;
 
-typedef 1024 NumData;
-typedef 4 PeWaysLog;
+typedef 262144 TotalByte; // 64*1024*4
+typedef 4096 TotalWords; // 64*64
+typedef 64 NumData;
+typedef 1024 Dimension;
+typedef 5 PeWaysLog;
 typedef TExp#(PeWaysLog) PeWays;
 
 
@@ -46,7 +45,7 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 
 	// Serializer
 	DeSerializerIfc#(32, 16) deserializer32b <- mkDeSerializer;
-	SerializerIfc#(512, 8) serializer64b <- mkSerializer;
+	SerializerIfc#(512, 16) serializer32b <- mkSerializer;
 
 	// DRAM Arbiter
 	DRAMArbiterRemoteIfc#(2) dramArbiter <- mkDRAMArbiterRemote(dram);
@@ -98,7 +97,7 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 
 		if ( off == 0 ) begin
 			stage1 <= True;
-			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Initial setting start!\n", cycleCount);
+			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Initial setting start!\033[0m\n", cycleCount);
 		end else if ( off == 1 ) begin
 			deserializer32b.put(d);
 		end else if ( off == 2 ) begin
@@ -106,13 +105,13 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 			stage3 <= True;
 			stage4 <= True;
 			stage5 <= True;
-			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: System start!\n", cycleCount);
+			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: System start!\033[0m\n", cycleCount);
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------
 	// Usage of the entire memory
 	//  For Mode 1
-	//  0 ~ 8,191
+	//  0 ~ 
 	//--------------------------------------------------------------------------------------------
 	// Stage 1 (Initial Setting)
 	//
@@ -123,17 +122,17 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 		if ( stage1Cnt != 0 ) begin
 			let payload <- deserializer32b.get;
 			dramArbiter.access[0].users[0].write(payload);
-			if ( stage1Cnt == fromInteger(totalWords) ) begin
+			if ( stage1Cnt == fromInteger(valueOf(TotalWords)) ) begin
 				stage1Cnt <= 0;
 				stage1 <= False;
 
 				//statusCheckerQ.enq(1); // Check dram writer initial set done
-				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Initial setting \033[1;32mdone!\n", cycleCount);
+				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Initial setting \033[1;32mdone!\033[0m\n", cycleCount);
 			end else begin
 				stage1Cnt <= stage1Cnt + 1;
 			end
 		end else begin
-			dramArbiter.access[0].users[0].cmd(0, fromInteger(totalWords), True);
+			dramArbiter.access[0].users[0].cmd(0, fromInteger(valueOf(TotalWords)), True);
 			stage1Cnt <= stage1Cnt + 1;
 		end
 	endrule
@@ -142,50 +141,23 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	//
 	// This stage read the data from DRAM
 	//--------------------------------------------------------------------------------------------
-	Reg#(Bit#(16)) stage2Cnt <- mkReg(0); // Good!!!
+	Reg#(Bit#(32)) stage2Cnt <- mkReg(0); // Good!!!
 	rule dramReader( stage2 );
 		if ( stage2Cnt != 0 ) begin
 			let payload <- dramArbiter.access[0].users[0].read;
-			serializer64b.put(payload);
+			serializer32b.put(payload);
 				
-			if ( stage2Cnt == 128 ) begin
+			if ( stage2Cnt == fromInteger(valueOf(TotalWords)) ) begin
 				stage2Cnt <= 0;
-				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Read 1024 x and y data \033[1;32mdone!\n", cycleCount);
+				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Read 1024 1024-dimension data \033[1;32mdone!\033[0m\n", cycleCount);
 				stage2 <= False;
 			end else begin
 				stage2Cnt <= stage2Cnt + 1;
 			end
 		end else begin
-			dramArbiter.access[0].users[0].cmd(0, 128, False); // 2*1024*4 = 128*64
+			dramArbiter.access[0].users[0].cmd(0, fromInteger(valueOf(TotalWords)), False);
 			stage2Cnt <= stage2Cnt + 1;
-			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Read 1024 x and y data \033[1;32mstart!\n", cycleCount);
-		end
-	endrule
-	//-------------------------------------------------------------------------------------------------
-	// Stage 3 (Data Serializer)
-	//
-	// This state splits the 512-bit payload to 32-bit data
-	//-------------------------------------------------------------------------------------------------
-	FIFO#(Vector#(2, Bit#(32))) originDataQ <- mkSizedBRAMFIFO(1024);
-	FIFO#(Vector#(2, Bit#(32))) clusterHeadQ <- mkSizedBRAMFIFO(16);
-	Reg#(Bit#(16)) stage3Cnt <- mkReg(0);
-	Reg#(Bit#(16)) testCnt <- mkReg(0);
-	rule dataSerializer( stage3 );
-		Vector#(2, Bit#(32)) v = replicate(0);
-		let d <- serializer64b.get;
-		v[0] = d[31:0]; // x
-		v[1] = d[63:32]; // y
-		
-		originDataQ.enq(v);
-		
-		if ( enqClusterHeadQ ) begin
-			if ( stage3Cnt + 1 == fromInteger(valueOf(PeWays)) ) begin
-				stage3Cnt <= 0;
-				enqClusterHeadQ <= False;
-			end else begin
-				stage3Cnt <= stage3Cnt + 1;
-			end
-			clusterHeadQ.enq(v);
+			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Read 1024-dimension data \033[1;32mstart!\033[0m\n", cycleCount);
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------
@@ -194,32 +166,23 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	// This stage relays the data to K-mean app
 	//--------------------------------------------------------------------------------------------
 	Reg#(Bit#(16)) stage4Cnt_1 <- mkReg(0);
+	Reg#(Bit#(16)) stage4Cnt_2 <- mkReg(0);
 	rule dataRelayer( stage4 );
-		originDataQ.deq;
-		let v = originDataQ.first;
+		let d <- serializer32b.get;
 
-		kmean.dataIn(v);
+		kmean.clusterHeadIn(d);
+		kmean.dataIn(d);
 
-		if ( stage4Cnt_1 + 1 == fromInteger(bramFifoSize) ) begin
+		if ( stage4Cnt_1 + 1 == fromInteger(valueOf(Dimension)) ) begin
+			if ( stage4Cnt_2 + 1 == fromInteger(valueOf(NumData)) ) begin
+				stage4Cnt_2 <= 0;
+			end else begin
+				stage4Cnt_2 <= stage4Cnt_2 + 1;
+			end
 			stage4Cnt_1 <= 0;
-			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay 1024 x and y data \033[1;32mdone!\n", cycleCount);
+			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay 1024-dimension data \033[1;32mdone!\033[0m[%d]\n", cycleCount, stage4Cnt_2);
 		end else begin
 			stage4Cnt_1 <= stage4Cnt_1 + 1;
-		end
-	endrule
-
-	Reg#(Bit#(16)) stage4Cnt_2 <- mkReg(0);
-	rule dataRelayer_ClusterHead( stage4 );
-		clusterHeadQ.deq;
-		let ch = clusterHeadQ.first;
-
-		kmean.clusterHeadIn(ch);
-
-		if ( stage4Cnt_2 + 1 == fromInteger(valueOf(PeWays)) ) begin
-			stage4Cnt_2 <= 0;
-			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay 16 cluster head \033[1;32mdone!\n", cycleCount);
-		end else begin
-			stage4Cnt_2 <= stage4Cnt_2 + 1;
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------
@@ -230,8 +193,9 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	rule dataReceiver( stage5 );
 		let d <- kmean.dataOut;
 		if ( d == 1 ) begin
-			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: System \033[1;32m finish!\n", cycleCount);
+			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: System \033[1;32m finish!\033[0m\n", cycleCount);
 			statusCheckerQ.enq(1);
+			cycleQ.enq(cycleCount);
 		end
 	endrule
 	//-------------------------------------------------------------------------------------------------

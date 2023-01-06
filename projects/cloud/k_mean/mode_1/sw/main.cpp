@@ -11,10 +11,8 @@
 #include "bdbmpcie.h"
 #include "dmasplitter.h"
 
-#define PEs 16
-#define Div 1024
-#define NumData 1024
-#define MAX_MIXING_COUNT 1000
+#define Dimension 1024
+#define NumData 64
 
 double timespec_diff_sec( timespec start, timespec end ) {
 	double t = end.tv_sec - start.tv_sec;
@@ -23,7 +21,7 @@ double timespec_diff_sec( timespec start, timespec end ) {
 }
 
 int main(int argc, char** argv) {
-	//srand(time(NULL)); // Do not need to refresh
+	srand(time(NULL));
 	//------------------------------------------------------------------------------------
 	// Initial
 	//------------------------------------------------------------------------------------
@@ -41,51 +39,20 @@ int main(int argc, char** argv) {
 	//------------------------------------------------------------------------------------
 	// Generate the values of the position data
 	//------------------------------------------------------------------------------------
-	printf( "Started generating the 2-dimensional position data\n" );
+	printf( "Started generating the 1024-dimensional position data\n" );
 	fflush( stdout );
-	// Position X	
-	int x = 0, y = 0;
-	float tmp = 0.00;
-	float* dataPosX = (float*)malloc(sizeof(float)*NumData);
-	float posX = 0;
-	for ( int i = 0; i < NumData; i ++ ) {
-		dataPosX[i] = posX;
-		posX = posX + 1.00;
-	}
-	for ( int j = 0; j < MAX_MIXING_COUNT; j ++ ) {
-		x = random() % NumData;
-		y = random() % NumData;
-		if ( x != y ) {
-			tmp = dataPosX[x];
-			dataPosX[x] = dataPosX[y];
-			dataPosX[y] = tmp;
+		
+	float* fData = (float*)malloc(sizeof(float)*NumData*Dimension);
+	for ( int i = 0; i < NumData*Dimension; i ++ ) {
+		fData[i] = 0;
+		if ( rand()%4 == 0 ) {
+			fData[i] = ((float)(rand()%10000))/1000;
 		}
 	}	
-	uint32_t* dataPosXv = (uint32_t*)malloc(sizeof(uint32_t)*NumData);
-	for ( int k = 0; k < NumData; k ++ ) {
-		dataPosXv[k] = *(uint32_t*)&dataPosX[k];
-	}
-	// Position Y
-	x = 0, y = 0;
-	tmp = 0;
-	float* dataPosY = (float*)malloc(sizeof(float)*NumData);
-	float posY = 0.00;
-	for ( int i = 0; i < NumData; i ++ ) {
-		dataPosY[i] = posY;
-		posY = posY + 1.00;
-	}
-	for ( int j = 0; j < MAX_MIXING_COUNT; j ++ ) {
-		x = random() % NumData;
-		y = random() % NumData;
-		if ( x != y ) {
-			tmp = dataPosY[x];
-			dataPosY[x] = dataPosY[y];
-			dataPosY[y] = tmp;
-		}
-	}
-	uint32_t* dataPosYv = (uint32_t*)malloc(sizeof(uint32_t)*NumData);
-	for ( int k = 0; k < NumData; k ++ ) {
-		dataPosYv[k] = *(uint32_t*)&dataPosY[k];
+
+	uint32_t* data = (uint32_t*)malloc(sizeof(uint32_t)*NumData*Dimension);
+	for ( int i = 0; i < NumData*Dimension; i ++ ) {
+		data[i] = *(uint32_t*)&fData[i];
 	}
 	//------------------------------------------------------------------------------------
 	// Send the data through PCIe first & Check all data are stored well
@@ -96,12 +63,15 @@ int main(int argc, char** argv) {
 	fflush( stdout );
 
 	int stage_1 = 1;
-	printf( "Started to send 2-dimensional position data!\n" );
+	printf( "Started to send 1024-dimensional position data!\n" );
 	fflush( stdout );
 	for ( int i = 0; i < NumData; i ++ ) {
-		pcie->userWriteWord(stage_1*4, dataPosXv[i]); // Pos X
-		pcie->userWriteWord(stage_1*4, dataPosYv[i]); // Pos Y
-	}
+		for ( int j = 0; j < Dimension; j ++ ) {
+			pcie->userWriteWord(stage_1*4, data[(i*Dimension)+j]);
+		}
+		printf( "Sent %d node done!\n", (i+1)*Dimension );
+		sleep(1);
+	}	
 	printf( "Sending the data done!\n" );
 	fflush( stdout );
 
@@ -151,6 +121,8 @@ int main(int argc, char** argv) {
 		}
 		sleep(60);
 	}
+	int cycleCheck = 1;
+	printf( "Cycle: %d\n", pcie->userReadWord(cycleCheck*4) );
 	
 	//clock_gettime(CLOCK_REALTIME, & now);
 	//printf( "\n" );
