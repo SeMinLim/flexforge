@@ -13,15 +13,16 @@ import PcieCtrl::*;
 import DRAMController::*;
 import DRAMArbiterRemote::*;
 
+import FloatingPoint::*;
+import Float32::*;
+
 import Kmean::*;
 
 
-typedef 262144 TotalByte; // 64*1024*4
-typedef 4096 TotalWords; // 64*64
-typedef 64 NumData;
+typedef 131072 TotalByte; // 32*1024*4
+typedef 2048 TotalWords; // 32*64
+typedef 32 NumData;
 typedef 1024 Dimension;
-typedef 5 PeWaysLog;
-typedef TExp#(PeWaysLog) PeWays;
 
 
 interface HwMainIfc;
@@ -45,7 +46,6 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 
 	// Serializer
 	DeSerializerIfc#(32, 16) deserializer32b <- mkDeSerializer;
-	SerializerIfc#(512, 16) serializer32b <- mkSerializer;
 
 	// DRAM Arbiter
 	DRAMArbiterRemoteIfc#(2) dramArbiter <- mkDRAMArbiterRemote(dram);
@@ -55,9 +55,9 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	//--------------------------------------------------------------------------------------
 	// Pcie Read and Write
 	//--------------------------------------------------------------------------------------
-	SyncFIFOIfc#(Tuple2#(IOReadReq, Bit#(32))) pcieRespQ <- mkSyncFIFOFromCC(1024, pcieclk);
-	SyncFIFOIfc#(IOReadReq) pcieReadReqQ <- mkSyncFIFOToCC(1024, pcieclk, pcierst);
-	SyncFIFOIfc#(IOWrite) pcieWriteQ <- mkSyncFIFOToCC(1024, pcieclk, pcierst);
+	SyncFIFOIfc#(Tuple2#(IOReadReq, Bit#(32))) pcieRespQ <- mkSyncFIFOFromCC(2048, pcieclk);
+	SyncFIFOIfc#(IOReadReq) pcieReadReqQ <- mkSyncFIFOToCC(2048, pcieclk, pcierst);
+	SyncFIFOIfc#(IOWrite) pcieWriteQ <- mkSyncFIFOToCC(2048, pcieclk, pcierst);
 	rule getReadReq;
 		let r <- pcie.dataReq;
 		pcieReadReqQ.enq(r);
@@ -80,13 +80,8 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	Reg#(Bool) stage1 <- mkReg(False);
 	// DRAM Reader
 	Reg#(Bool) stage2 <- mkReg(False);
-	// Data Serializer
-	Reg#(Bool) stage3 <- mkReg(False);
-	Reg#(Bool) enqClusterHeadQ <- mkReg(True);
-	// Data Relayer
-	Reg#(Bool) stage4 <- mkReg(False);
 	// Data Receiver
-	Reg#(Bool) stage5 <- mkReg(False);
+	Reg#(Bool) stage3 <- mkReg(False);
 	rule getCmd;
 		pcieWriteQ.deq;
 		let w = pcieWriteQ.first;
@@ -103,15 +98,9 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 		end else if ( off == 2 ) begin
 			stage2 <= True;
 			stage3 <= True;
-			stage4 <= True;
-			stage5 <= True;
 			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: System start!\033[0m\n", cycleCount);
 		end
 	endrule
-	//--------------------------------------------------------------------------------------------
-	// Usage of the entire memory
-	//  For Mode 1
-	//  0 ~ 
 	//--------------------------------------------------------------------------------------------
 	// Stage 1 (Initial Setting)
 	//
@@ -126,7 +115,7 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 				stage1Cnt <= 0;
 				stage1 <= False;
 
-				//statusCheckerQ.enq(1); // Check dram writer initial set done
+				statusCheckerQ.enq(1); // Check dram writer initial set done
 				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Initial setting \033[1;32mdone!\033[0m\n", cycleCount);
 			end else begin
 				stage1Cnt <= stage1Cnt + 1;
@@ -145,7 +134,7 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 	rule dramReader( stage2 );
 		if ( stage2Cnt != 0 ) begin
 			let payload <- dramArbiter.access[0].users[0].read;
-			serializer32b.put(payload);
+			kmean.dataIn(payload);
 				
 			if ( stage2Cnt == fromInteger(valueOf(TotalWords)) ) begin
 				stage2Cnt <= 0;
@@ -161,45 +150,30 @@ module mkHwMain#(PcieUserIfc pcie, DRAMUserIfc dram) (HwMainIfc);
 		end
 	endrule
 	//--------------------------------------------------------------------------------------------
-	// Stage 4 (K-mean, Data Relayer)
-	//
-	// This stage relays the data to K-mean app
-	//--------------------------------------------------------------------------------------------
-	Reg#(Bit#(16)) stage4Cnt_1 <- mkReg(0);
-	Reg#(Bit#(16)) stage4Cnt_2 <- mkReg(0);
-	rule dataRelayer( stage4 );
-		let d <- serializer32b.get;
-
-		kmean.clusterHeadIn(d);
-		kmean.dataIn(d);
-
-		if ( stage4Cnt_1 + 1 == fromInteger(valueOf(Dimension)) ) begin
-			if ( stage4Cnt_2 + 1 == fromInteger(valueOf(NumData)) ) begin
-				stage4Cnt_2 <= 0;
-			end else begin
-				stage4Cnt_2 <= stage4Cnt_2 + 1;
-			end
-			stage4Cnt_1 <= 0;
-			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: Relay 1024-dimension data \033[1;32mdone!\033[0m[%d]\n", cycleCount, stage4Cnt_2);
-		end else begin
-			stage4Cnt_1 <= stage4Cnt_1 + 1;
-		end
-	endrule
-	//--------------------------------------------------------------------------------------------
-	// Stage 5 (Data Receiver)
+	// Stage 3 (Data Receiver)
 	//
 	// This stage receives status data from K-mean App
 	//--------------------------------------------------------------------------------------------
-	rule dataReceiver( stage5 );
+	Reg#(Bit#(32)) stage3Cnt_1 <- mkReg(0);
+	Reg#(Bit#(32)) stage3Cnt_2 <- mkReg(0);
+	rule dataReceiver( stage3 );
 		let d <- kmean.dataOut;
-		if ( d == 1 ) begin
-			$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: System \033[1;32m finish!\033[0m\n", cycleCount);
-			statusCheckerQ.enq(1);
-			cycleQ.enq(cycleCount);
+		if ( stage3Cnt_1 + 1 == fromInteger(valueOf(PeWays)) ) begin
+			if ( stage3Cnt_2 + 1 == fromInteger(valueOf(NumData)) ) begin
+				statusCheckerQ.enq(1);
+				cycleQ.enq(cycleCount);
+				stage3Cnt_2 <= 0;
+				$write("\033[1;33mCycle %1d -> \033[1;33m[HwMain]: \033[0m: System \033[1;32m finish!\033[0m\n", cycleCount);
+			end else begin
+				stage3Cnt_2 <= stage3Cnt_2 + 1;
+			end
+			stage3Cnt_1 <= 0;
+		end else begin
+			stage3Cnt_1 <= stage3Cnt_1 + 1;
 		end
 	endrule
 	//-------------------------------------------------------------------------------------------------
-	// Stage 6 (Status Check)
+	// Stage 4 (Status Check)
 	//
 	// This stage checks the status of the system and relays it to the host
 	//-------------------------------------------------------------------------------------------------

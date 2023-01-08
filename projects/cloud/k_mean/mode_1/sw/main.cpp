@@ -12,7 +12,7 @@
 #include "dmasplitter.h"
 
 #define Dimension 1024
-#define NumData 64
+#define NumData 32
 
 double timespec_diff_sec( timespec start, timespec end ) {
 	double t = end.tv_sec - start.tv_sec;
@@ -69,22 +69,22 @@ int main(int argc, char** argv) {
 		for ( int j = 0; j < Dimension; j ++ ) {
 			pcie->userWriteWord(stage_1*4, data[(i*Dimension)+j]);
 		}
-		printf( "Sent %d node done!\n", (i+1)*Dimension );
-		sleep(1);
+		//printf( "Sent %d node done!\n", (i+1)*Dimension );
+		//sleep(2);
 	}	
 	printf( "Sending the data done!\n" );
 	fflush( stdout );
 
 	int statusCheck = 0;
 	unsigned int status = 0;
-	/*while ( 1 ) {
-		status = pcie->userReadWord(statusCheck_1*4);
+	while ( 1 ) {
+		status = pcie->userReadWord(statusCheck*4);
 		if ( status == 1 ) {
 			printf( "Storing the data to DRAM done!\n\n" );
 			fflush( stdout );
 			break;
 		}
-	}*/
+	}
         //------------------------------------------------------------------------------	
 	// Send a command to HW to start running N-body
 	//------------------------------------------------------------------------------
